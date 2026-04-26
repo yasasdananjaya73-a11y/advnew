@@ -80,14 +80,12 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
         
-        // FIXED: Syncs with the main dashboard's storage key perfectly
         const appId = (typeof __app_id !== 'undefined') ? __app_id : 'canteen-os-live';
 
         // State
         let personnelMap = {};
         let attendanceLogs = [];
         
-        // Dynamic Daily Rates map instead of static value
         let dailyRates = {
             "Sunday": 0, "Monday": 0, "Tuesday": 0, "Wednesday": 0,
             "Thursday": 0, "Friday": 0, "Saturday": 0
@@ -101,7 +99,6 @@
         const formatter = new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR' });
         function getTodayStr() { return new Date().toISOString().split('T')[0]; }
 
-        // Helper to get day name safely from YYYY-MM-DD
         function getDayName(dateString) {
             if (!dateString) return '';
             const parts = dateString.split('-');
@@ -137,7 +134,6 @@
             } catch (err) { console.error("Auth Error:", err); }
         };
 
-        // FIXED: Clear hard redirect directly to dashboard avoiding history conflicts
         window.goToDashboard = () => {
             window.location.href = 'index.html';
         };
@@ -165,7 +161,6 @@
         initAuth();
 
         const loadData = () => {
-            // 1. Get Daily Token Values Map
             const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices');
             onSnapshot(settingsRef, (docSnap) => {
                 if (docSnap.exists()) {
@@ -179,7 +174,6 @@
                 updateAnalytics();
             });
 
-            // 2. Listen to Personnel DB
             const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'employees');
             onSnapshot(pRef, (snap) => {
                 personnelMap = {};
@@ -187,7 +181,6 @@
                 updateAnalytics();
             });
 
-            // 3. Listen to Attendance Logs (Tokens)
             const aRef = collection(db, 'artifacts', appId, 'public', 'data', 'tokens');
             onSnapshot(aRef, (snap) => {
                 attendanceLogs = [];
@@ -196,9 +189,6 @@
             });
         };
 
-        // ============================================================
-        //  ANALYTICS ENGINE
-        // ============================================================
         function updateAnalytics() {
             const todayStr = getTodayStr();
             const currentMonthStr = todayStr.substring(0, 7); 
@@ -212,7 +202,6 @@
             const compStats = {};
             const siteStats = {};
 
-            // Initialize last 7 days
             for (let i=6; i>=0; i--) {
                 const d = new Date(); d.setDate(d.getDate() - i);
                 dailyStats[d.toISOString().split('T')[0]] = 0;
@@ -221,7 +210,6 @@
             const tbody = document.getElementById('report-table-body');
             if(tbody) tbody.innerHTML = '';
 
-            // Sort logs by newest first for the live feed
             const sortedLogs = [...attendanceLogs].sort((a, b) => {
                 const tA = a.issuedAt?.toMillis ? a.issuedAt.toMillis() : (a.issuedAt?.seconds || 0);
                 const tB = b.issuedAt?.toMillis ? b.issuedAt.toMillis() : (b.issuedAt?.seconds || 0);
@@ -237,7 +225,6 @@
                 
                 if (!logDate) return;
 
-                // Determine rate based on the log date
                 let cost = 0;
                 if (log.costs && typeof log.costs.total === 'number') {
                     cost = isConsumed ? log.costs.total : 0;
@@ -247,7 +234,6 @@
                     cost = isConsumed ? rateForDay : 0;
                 }
                 
-                // Monthly Stats
                 if (logDate.startsWith(currentMonthStr)) {
                     issuedMonth++;
                     if (isConsumed) {
@@ -256,7 +242,6 @@
                     }
                 }
 
-                // Daily Stats & Feed
                 if(logDate === todayStr) {
                     issuedToday++;
                     if (isConsumed) {
@@ -264,7 +249,6 @@
                         consumedToday++;
                     }
                     
-                    // Populate Live Feed (Max 100 items)
                     if(tbody && tableCount < 100) {
                         const tr = document.createElement('tr');
                         tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700/50 last:border-0 transition-colors animate-fade-in';
@@ -293,7 +277,6 @@
                     }
                 }
 
-                // Distributions (Only count consumed meals for cost distributions)
                 if (isConsumed) {
                     if (dailyStats.hasOwnProperty(logDate)) dailyStats[logDate] += cost;
 
@@ -309,7 +292,6 @@
                 }
             });
 
-            // Update DOM
             document.getElementById('rpt-total-spend').textContent = formatter.format(totalCostToday);
             document.getElementById('rpt-tokens-issued-today').textContent = issuedToday;
             document.getElementById('rpt-tokens-consumed-today').textContent = consumedToday;
@@ -323,7 +305,6 @@
             renderDistributionChart('rpt-chart-comp', compStats, true);
             renderDistributionChart('rpt-chart-site', siteStats, true);
 
-            // 7-Day Trend
             const trendContainer = document.getElementById('rpt-chart-trend');
             trendContainer.innerHTML = '';
             const maxDaily = Math.max(...Object.values(dailyStats), 10);
@@ -348,7 +329,7 @@
             container.innerHTML = '';
             
             const total = Object.values(stats).reduce((a,b)=>a+b, 0) || 1;
-            const sortedKeys = Object.keys(stats).sort((a,b) => stats[b] - stats[a]).slice(0, 5); // Top 5
+            const sortedKeys = Object.keys(stats).sort((a,b) => stats[b] - stats[a]).slice(0, 5); 
 
             if (sortedKeys.length === 0) {
                 container.innerHTML = '<div class="text-xs text-slate-500 italic py-4">No financial data available.</div>';
@@ -374,9 +355,6 @@
             });
         }
 
-        // ============================================================
-        //  REPORTS & EXPORTS
-        // ============================================================
         window.printReport = () => {
             const content = document.getElementById('report-preview-content').innerHTML;
             const overlay = document.getElementById('print-overlay');
@@ -400,7 +378,6 @@
             let count = 0;
             let totalCost = 0;
 
-            // Filter and sort logs
             const filteredLogs = attendanceLogs.filter(log => {
                 const logDate = log.issuedDate || log.date;
                 return logDate >= startDate && logDate <= endDate;
@@ -409,7 +386,7 @@
             filteredLogs.sort((a, b) => {
                 const tA = a.issuedAt?.toMillis ? a.issuedAt.toMillis() : (a.issuedAt?.seconds || 0);
                 const tB = b.issuedAt?.toMillis ? b.issuedAt.toMillis() : (b.issuedAt?.seconds || 0);
-                return tA - tB; // Chronological
+                return tA - tB; 
             });
 
             filteredLogs.forEach(log => {
@@ -417,7 +394,6 @@
                 const logDate = log.issuedDate || log.date;
                 const isConsumed = log.status === 'CONSUMED' || log.status === 'REDEEMED' || log.mealRedeemed === true;
                 
-                // Determine rate
                 let cost = 0;
                 if (log.costs && typeof log.costs.total === 'number') {
                     cost = isConsumed ? log.costs.total : 0;
@@ -432,7 +408,6 @@
                 const comp = emp.companyName || emp.company || '';
                 const site = emp.site || '';
 
-                // Grouping Filter Logic
                 if (filterType === 'DEPT' && !dept) return; 
                 if (filterType === 'ACCT' && !acct) return;
                 if (filterType === 'COMP' && !comp) return;
@@ -546,7 +521,6 @@
                     
                     if (filterType === 'CONSUMED_ONLY' && !isConsumed) return;
 
-                    // Determine rate
                     let cost = 0;
                     if (log.costs && typeof log.costs.total === 'number') {
                         cost = isConsumed ? log.costs.total : 0;
@@ -633,17 +607,19 @@
     <main class="flex-grow flex flex-col relative justify-center">
         
         <!-- LOADING VIEW -->
-        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0f172a] flex flex-col items-center justify-center transition-opacity duration-500">
-            <div class="relative flex items-center justify-center mb-8">
-                <!-- Outer subtle pulse/glow -->
-                <div class="absolute inline-flex h-40 w-40 rounded-full bg-purple-500/10 animate-pulse"></div>
-                <!-- Inner solid dot with glow -->
-                <div class="relative inline-flex rounded-full h-12 w-12 bg-[#a855f7] shadow-[0_0_40px_rgba(168,85,247,0.8)]"></div>
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center mb-6">
+                <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-[#a855f7] opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-[#a855f7] to-purple-700 shadow-lg shadow-[#a855f7]/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
+                    <i class="fas fa-chart-pie text-white text-3xl"></i>
+                </div>
             </div>
-            <h2 class="text-white font-bold text-2xl tracking-tight z-10 relative mt-2">Syncing Financials...</h2>
+            <div class="text-center space-y-2">
+                <h2 class="text-white font-extrabold text-3xl tracking-tight">Enterprise<span class="text-[#a855f7]">Analytics</span></h2>
+            </div>
         </div>
 
-        <!-- UNAUTHORIZED VIEW (Corrected CSS to center in remaining space, below navbar) -->
+        <!-- UNAUTHORIZED VIEW -->
         <div id="view-unauthorized" class="hidden flex-1 flex-col items-center justify-center text-center px-6 animate-fade-in relative z-10 py-16 w-full">
             <div class="bg-slate-800/50 p-10 rounded-[2rem] border border-slate-700/50 shadow-2xl max-w-md w-full relative overflow-hidden mx-auto">
                 <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
