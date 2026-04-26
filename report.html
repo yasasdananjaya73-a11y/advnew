@@ -138,17 +138,39 @@
             window.location.href = 'index.html';
         };
 
+        // Loading states to ensure all data arrives before rendering
+        let isSettingsLoaded = false;
+        let isPersonnelLoaded = false;
+        let isLogsLoaded = false;
+        let initialRenderDone = false;
+
+        function checkDataLoaded() {
+            if (isSettingsLoaded && isPersonnelLoaded && isLogsLoaded) {
+                // Render data only when ALL collections have returned
+                updateAnalytics();
+                
+                // Hide loading screen and display dashboard
+                if (!initialRenderDone) {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-report').classList.remove('hidden');
+                    initialRenderDone = true;
+                }
+            }
+        }
+
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
                 if (sessionStr) {
                     const session = JSON.parse(sessionStr);
                     loggedInSysUser = { username: session.username };
-                    document.getElementById('view-loading').classList.add('hidden');
-                    document.getElementById('view-report').classList.remove('hidden');
                     
                     document.getElementById('rpt-start').value = getTodayStr();
                     document.getElementById('rpt-end').value = getTodayStr();
+                    
+                    // Show loading screen while we fetch data
+                    document.getElementById('view-loading').classList.remove('hidden');
+                    document.getElementById('view-report').classList.add('hidden');
                     
                     loadData();
                 } else {
@@ -171,21 +193,24 @@
                         dailyRates = data.dailyRates;
                     }
                 }
-                updateAnalytics();
+                isSettingsLoaded = true;
+                checkDataLoaded();
             });
 
             const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'employees');
             onSnapshot(pRef, (snap) => {
                 personnelMap = {};
                 snap.forEach(doc => personnelMap[doc.id] = doc.data());
-                updateAnalytics();
+                isPersonnelLoaded = true;
+                checkDataLoaded();
             });
 
             const aRef = collection(db, 'artifacts', appId, 'public', 'data', 'tokens');
             onSnapshot(aRef, (snap) => {
                 attendanceLogs = [];
                 snap.forEach(doc => attendanceLogs.push({ id: doc.id, ...doc.data() }));
-                updateAnalytics();
+                isLogsLoaded = true;
+                checkDataLoaded();
             });
         };
 
