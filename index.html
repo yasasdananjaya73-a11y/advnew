@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>CanteenOS | Professional</title>
     
+    <!-- Preconnect for faster loading speeds -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://www.gstatic.com">
+    <link rel="dns-prefetch" href="https://www.gstatic.com">
+    <link rel="dns-prefetch" href="https://cdn.tailwindcss.com">
+    <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
+    
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -344,6 +352,7 @@
             btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Authenticating...';
             btn.disabled = true;
 
+            // Reduced delay for faster user experience
             setTimeout(() => {
                 const u = document.getElementById('login-username').value.trim().toUpperCase();
                 const p = document.getElementById('login-pin').value.trim();
@@ -363,7 +372,7 @@
                 
                 btn.innerHTML = originalText;
                 btn.disabled = false;
-            }, 600); 
+            }, 300); 
         };
 
         window.appLogout = () => {
@@ -619,12 +628,12 @@
                         <form onsubmit="appLogin(event)" class="space-y-6 relative z-20">
                             <div>
                                 <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">TERMINAL ID</label>
-                                <input type="text" id="login-username" class="w-full px-4 py-3.5 rounded-xl bg-white text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold" required placeholder="ADMIN001">
+                                <input type="text" id="login-username" class="w-full px-4 py-3.5 rounded-xl bg-white text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold" required>
                             </div>
 
                             <div>
                                 <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">SECRET KEY (ACCESS AUTH)</label>
-                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-blue-500/50 rounded-xl bg-slate-900/80 text-sm text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all tracking-widest shadow-inner" required placeholder="•••••">
+                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-blue-500/50 rounded-xl bg-slate-900/80 text-sm text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all tracking-widest shadow-inner" required>
                             </div>
                             
                             <div id="login-error" class="hidden text-red-400 text-xs text-center font-semibold bg-red-500/10 py-3 rounded-lg border border-red-500/20 animate-fade-in-up flex items-center justify-center">
@@ -643,8 +652,9 @@
             </div>
             
             <!-- Global Footer text specifically for Login view -->
-            <div class="absolute bottom-4 w-full text-center z-20 pointer-events-none px-4">
-                <p class="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-1">CANTEENOS PROFESSIONAL DESIGN BY ACCOUNTING ADVISOR & SOLUTIONS @2026</p>
+            <div class="absolute bottom-6 w-full text-center z-20 pointer-events-none px-4">
+                <p class="text-[11px] text-slate-400 font-medium mb-1 drop-shadow-md">Application developed by Growth Gen</p>
+                <p class="text-[11px] text-slate-500 font-medium drop-shadow-md">© 2026 360° Management (Pvt) Ltd. All rights reserved.</p>
             </div>
             
             <!-- Bottom Fade -->
@@ -769,8 +779,9 @@
             
             <!-- Global Footer for Dashboard Menu -->
             <div class="mt-12 text-center pb-8 animate-fade-in-up delay-400 px-4">
-                <p class="text-xs text-slate-400 dark:text-slate-500 font-semibold mb-2">CanteenOS | Professional Enterprise System</p>
-                <p class="text-[10px] text-slate-500 dark:text-slate-600 uppercase tracking-widest mt-1">CANTEENOS PROFESSIONAL DESIGN BY ACCOUNTING ADVISOR & SOLUTIONS @2026</p>
+                <p class="text-[13px] text-slate-400 font-semibold mb-2">Coats Thread Exports <span class="text-slate-500 mx-1">|</span> Internal Operations System</p>
+                <p class="text-[11px] text-slate-500 mt-3">Application developed by Growth Gen</p>
+                <p class="text-[11px] text-slate-500 mt-1">© 2026 360° Management (Pvt) Ltd. All rights reserved.</p>
             </div>
             
         </div>
