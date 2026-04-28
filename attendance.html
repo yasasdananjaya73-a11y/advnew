@@ -32,8 +32,6 @@
     <style>
         body { font-family: 'Inter', sans-serif; }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
-        .hide-scroll::-webkit-scrollbar { display: none; }
-        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
         
         .scanner-input { 
             caret-color: transparent; 
@@ -44,17 +42,19 @@
             to { opacity: 1; transform: translateY(0); }
         }
         .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        
+        /* Styled visible scrollbar for the page */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
     </style>
 
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, getDoc, getDocs, query, where, limit, setDoc, deleteDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, getDocs, query, where, setDoc, deleteDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Firebase Config
         let firebaseConfig = {};
@@ -80,6 +80,7 @@
 
         // State
         let SYSTEM_USERS = {};
+        let personnelMap = {};
         let todayTokens = [];
         let WEEKLY_PRICES = { Monday: 80, Tuesday: 80, Wednesday: 80, Thursday: 80, Friday: 80, Saturday: 80, Sunday: 80 };
         let alcMealItems = {};
@@ -91,12 +92,14 @@
         let scanMode = 'STD';
         let html5QrcodeScanner = null;
         let scanDebounceTimer = null;
+        let lastKeyTime = Date.now(); // For blocking manual typing
 
         // Loading states to ensure all data arrives before rendering
         let isSysUsersLoaded = false;
         let isTokensLoaded = false;
         let isPricesLoaded = false;
         let isAlcLoaded = false;
+        let isPersonnelLoaded = false;
         let initialRenderDone = false;
 
         document.documentElement.classList.add('dark');
@@ -154,11 +157,11 @@
             try {
                 if (window.location.protocol === 'blob:') window.history.back();
                 else window.location.href = 'index.html';
-            } catch (e) { window.history.back(); }
+            } catch (e) { window.location.href = 'index.html'; }
         };
 
         function checkDataLoaded() {
-            if (isSysUsersLoaded && isTokensLoaded && isPricesLoaded && isAlcLoaded) {
+            if (isSysUsersLoaded && isTokensLoaded && isPricesLoaded && isAlcLoaded && isPersonnelLoaded) {
                 window.renderLedger();
                 
                 if (!initialRenderDone) {
@@ -167,7 +170,7 @@
                     setTimeout(() => {
                         const scanner = document.getElementById('attendance-scanner');
                         if(scanner) scanner.focus();
-                    }, 300);
+                    }, 100);
                     initialRenderDone = true;
                 }
             }
@@ -179,7 +182,7 @@
                 if (sessionStr || window.location.protocol === 'blob:') {
                     loggedInSysUser = sessionStr ? JSON.parse(sessionStr) : { username: 'ADMIN' };
                     
-                    // Keep loading screen active until everything is fetched
+                    // Show loader while connecting
                     document.getElementById('view-loading').classList.remove('hidden');
                     document.getElementById('view-attendance').classList.add('hidden');
                     
@@ -201,24 +204,10 @@
                 SYSTEM_USERS = {};
                 snap.forEach(doc => { SYSTEM_USERS[doc.id] = doc.data(); });
                 isSysUsersLoaded = true;
-                checkDataLoaded(); 
+                checkDataLoaded();
             }, (err) => console.error("System Users fetch error:", err));
 
-            // Fetch TOKENS collection
-            const today = getTodayStr();
-            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), (snap) => {
-                todayTokens = [];
-                snap.forEach(doc => {
-                    const data = doc.data();
-                    if (data.issuedDate === today || data.date === today) {
-                        todayTokens.push({ id: doc.id, ...data });
-                    }
-                });
-                isTokensLoaded = true;
-                checkDataLoaded();
-            }, (err) => console.error("Tokens fetch error:", err));
-
-            // Fetch SETTINGS collection to acquire meal_prices
+            // Load Settings (Prices)
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices'), (docSnap) => {
                 if (docSnap.exists() && docSnap.data().prices) {
                     Object.assign(WEEKLY_PRICES, docSnap.data().prices);
@@ -226,7 +215,7 @@
                 isPricesLoaded = true;
                 checkDataLoaded();
             }, (err) => console.error("Prices fetch error:", err));
-            
+
             // Fetch ALC Settings
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen'), (docSnap) => {
                 if (docSnap.exists() && docSnap.data().alcMealItems) {
@@ -236,10 +225,39 @@
                 isAlcLoaded = true;
                 checkDataLoaded();
             }, (err) => console.error("ALC settings fetch error:", err));
+
+            // Load Employees (Caches in memory for INSTANT scanning speed)
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'employees'), (snap) => {
+                personnelMap = {};
+                snap.forEach(doc => { personnelMap[doc.id] = doc.data(); });
+                isPersonnelLoaded = true;
+                checkDataLoaded();
+            }, (err) => console.error("Employees fetch error:", err));
+
+            // Load Tokens (Critical Path)
+            const today = getTodayStr();
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), (snap) => {
+                todayTokens = [];
+                snap.forEach(doc => {
+                    const data = doc.data();
+                    if (data.issuedDate === today || data.date === today) {
+                        todayTokens.push({ id: doc.id, ...data });
+                    }
+                });
+                
+                isTokensLoaded = true;
+                checkDataLoaded();
+                
+                if (initialRenderDone) window.renderLedger();
+            }, (err) => {
+                console.error("Tokens fetch error:", err);
+                showToast("Failed to sync tokens.", "error");
+            });
         };
 
         function updateAlcDropdown() {
             const select = document.getElementById('alc-meal-select');
+            if (!select) return;
             select.innerHTML = '<option value="" disabled selected>-- Select ALC Meal Variety --</option>';
             Object.entries(alcMealItems).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
                 select.innerHTML += `<option value="${name}">${name} (LKR ${parseFloat(cost).toFixed(2)})</option>`;
@@ -266,7 +284,7 @@
                 input.classList.remove('border-indigo-500/60', 'focus:border-indigo-500', 'focus:ring-indigo-500/20', 'shadow-[0_0_15px_rgba(99,102,241,0.15)]');
                 input.classList.add('border-blue-500/60', 'focus:border-blue-500', 'focus:ring-blue-500/20', 'shadow-[0_0_15px_rgba(59,130,246,0.15)]');
                 icon.className = "fas fa-qrcode text-blue-500 text-xl md:text-2xl transition-colors";
-                helper.innerHTML = '<i class="fas fa-keyboard mr-1"></i> Awaiting scanner input...';
+                if(helper) helper.innerHTML = '<i class="fas fa-keyboard mr-1"></i> Automatic scanner input mode active...';
                 
                 setTimeout(() => document.getElementById('attendance-scanner').focus(), 100);
             } else {
@@ -280,7 +298,7 @@
                 input.classList.remove('border-blue-500/60', 'focus:border-blue-500', 'focus:ring-blue-500/20', 'shadow-[0_0_15px_rgba(59,130,246,0.15)]');
                 input.classList.add('border-indigo-500/60', 'focus:border-indigo-500', 'focus:ring-indigo-500/20', 'shadow-[0_0_15px_rgba(99,102,241,0.15)]');
                 icon.className = "fas fa-qrcode text-indigo-500 text-xl md:text-2xl transition-colors";
-                helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
+                if(helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
             }
         };
 
@@ -291,11 +309,11 @@
             
             if (val) {
                 scannerWrapper.classList.remove('hidden');
-                helper.innerHTML = '<i class="fas fa-check-circle mr-1 text-indigo-400"></i> Ready for ALC scan';
+                if(helper) helper.innerHTML = '<i class="fas fa-check-circle mr-1 text-indigo-400"></i> Ready for ALC scan';
                 setTimeout(() => document.getElementById('attendance-scanner').focus(), 100);
             } else {
                 scannerWrapper.classList.add('hidden');
-                helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
+                if(helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
             }
         };
 
@@ -303,31 +321,27 @@
             const listEl = document.getElementById('attendance-list');
             const term = (document.getElementById('attendance-search')?.value || '').toLowerCase();
             
-            // Authorization Check for "Reverse" Button
             const role = loggedInSysUser?.role || SYSTEM_USERS[loggedInSysUser?.username]?.role || 'USER';
             const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
 
-            // Tally Metrics & Site Scans
+            // Metrics - Token count logic matching UI
+            document.getElementById('stat-cleared-emp').innerText = todayTokens.length;
+
+            // Site Tally
             const siteCounts = {};
-            let totalScanned = todayTokens.length;
-            
             todayTokens.forEach(t => { 
                 const siteName = t.site && t.site !== '-' ? t.site : 'Unassigned Site';
                 siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
             });
 
-            // Update Top Metrics UI
-            document.getElementById('stat-cleared-emp').innerText = totalScanned;
-
-            // Update Site-Wise Distribution UI
             let siteHtml = '';
             Object.entries(siteCounts).sort((a,b) => b[1] - a[1]).forEach(([site, count]) => {
-                siteHtml += `<div class="bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-xl flex items-center gap-3 shadow-sm shrink-0">
+                siteHtml += `<div class="bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-xl flex items-center gap-3 shadow-sm shrink-0 mb-2">
                                 <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">${site}</span>
                                 <span class="bg-blue-500/20 text-blue-400 font-black px-2 py-0.5 rounded-lg text-sm">${count}</span>
                              </div>`;
             });
-            if (totalScanned === 0) {
+            if (todayTokens.length === 0) {
                 siteHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No scans recorded yet today</div>`;
             }
             const siteContainer = document.getElementById('site-wise-container');
@@ -336,11 +350,10 @@
             // Render Scanned (Issued) Ledger List
             let html = '';
             
-            // Filter search term
             let filteredTokens = todayTokens.filter(t => {
                 if (!term) return true;
-                const tId = String(t.empId).toLowerCase();
-                const tName = String(t.empName).toLowerCase();
+                const tId = String(t.empId || '').toLowerCase();
+                const tName = String(t.empName || '').toLowerCase();
                 const tDept = String(t.dept || '').toLowerCase();
                 return tName.includes(term) || tId.includes(term) || tDept.includes(term);
             });
@@ -353,34 +366,34 @@
             });
 
             filteredTokens.forEach(log => {
-                const initial = String(log.empName).charAt(0).toUpperCase();
+                const initial = String(log.empName || '?').charAt(0).toUpperCase();
                 const mealLabel = log.mealName ? `<span class="text-[9px] uppercase font-bold text-indigo-400 tracking-wider bg-indigo-500/10 px-2 py-0.5 rounded ml-2 border border-indigo-500/20">${log.mealName}</span>` : '';
                 const displayDept = log.dept || '-';
                 const timeStr = log.issuedAt ? new Date(log.issuedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now';
 
                 html += `
-                    <div class="flex items-center justify-between p-4 rounded-2xl border bg-emerald-900/10 border-emerald-900/40 hover:shadow-lg transition-all duration-300">
-                        <div class="flex items-center gap-4 shrink-0 overflow-hidden">
-                            <div class="w-12 h-12 rounded-full shrink-0 bg-emerald-900/30 text-emerald-400 flex items-center justify-center font-bold text-lg shadow-inner">
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-2xl border bg-blue-900/10 border-blue-900/40 hover:shadow-lg transition-all duration-300 mb-3">
+                        <div class="flex items-center gap-4 shrink-0 overflow-hidden w-full sm:w-auto mb-3 sm:mb-0">
+                            <div class="w-12 h-12 rounded-full shrink-0 bg-blue-900/30 text-blue-400 flex items-center justify-center font-bold text-lg shadow-inner">
                                 ${initial}
                             </div>
                             <div class="min-w-0">
-                                <h4 class="font-bold text-white text-base truncate">${log.empName}</h4>
+                                <h4 class="font-bold text-white text-base truncate">${log.empName || 'Unknown'}</h4>
                                 <div class="text-xs text-slate-400 flex items-center mt-1 flex-wrap gap-2">
-                                    <span class="font-mono bg-slate-700 px-1.5 py-0.5 rounded border border-slate-600 text-slate-200">${log.empId}</span>
+                                    <span class="font-mono bg-slate-700 px-1.5 py-0.5 rounded border border-slate-600 text-slate-200">${log.empId || '-'}</span>
                                     <span class="truncate">${displayDept}</span>
-                                    <span class="text-emerald-500 ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
+                                    <span class="text-blue-500 ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
                                     ${mealLabel}
                                 </div>
                             </div>
                         </div>
-                        <div class="shrink-0 pl-2">
+                        <div class="shrink-0 w-full sm:w-auto sm:pl-2 flex justify-end">
                             <div class="flex items-center gap-2">
-                                <div class="flex items-center gap-2 text-emerald-400 font-extrabold text-sm bg-emerald-900/30 px-3 py-2 rounded-xl border border-emerald-800/50 shadow-sm hidden sm:flex">
+                                <div class="flex items-center gap-2 text-emerald-400 font-extrabold text-sm bg-emerald-900/30 px-3 py-2 rounded-xl border border-emerald-800/50 shadow-sm">
                                     <i class="fas fa-check-circle"></i> <span>Token Issued</span>
                                 </div>
                                 ${isAdmin ? `
-                                <button onclick="reviseAttendance('${log.id}', '${String(log.empName).replace(/'/g, "\\'")}', '${log.status}')" class="text-slate-400 hover:text-red-400 bg-slate-800 hover:bg-red-900/40 w-9 h-9 flex items-center justify-center rounded-xl transition-all shadow-sm border border-slate-700 hover:border-red-800/50" title="Revoke Attendance (Admin Only)">
+                                <button onclick="reviseAttendance('${log.id}', '${String(log.empName || '').replace(/'/g, "\\'")}', '${log.status}')" class="text-slate-400 hover:text-red-400 bg-slate-800 hover:bg-red-900/40 w-9 h-9 flex items-center justify-center rounded-xl transition-all shadow-sm border border-slate-700 hover:border-red-800/50" title="Revoke Attendance (Admin Only)">
                                     <i class="fas fa-undo"></i>
                                 </button>` : ''}
                             </div>
@@ -399,7 +412,7 @@
         window.filterAttendance = () => window.renderLedger();
 
         // --------------------------------------------------------------------
-        // SCANNER LOGIC 
+        // SCANNER LOGIC (Speed Trap - Blocks Manual Typing)
         // --------------------------------------------------------------------
         window.executeScan = async (val) => {
             if (!val || !auth.currentUser) return;
@@ -413,27 +426,13 @@
                 return showScanResultModal('ALREADY ACTIVE', `${alreadyMarked.empName} has already accessed.`, 'warning');
             }
 
-            // Dynamically query the employee to bypass the need to download the full DB upfront
-            let emp = null;
-            try {
-                // Try fetching by Document ID
-                const empRef = doc(db, 'artifacts', appId, 'public', 'data', 'employees', val);
-                const empSnap = await getDoc(empRef);
-                if (empSnap.exists()) {
-                    emp = { id: empSnap.id, ...empSnap.data() };
-                } else {
-                    // Fallback to querying by the `empId` field
-                    const empQ = query(collection(db, 'artifacts', appId, 'public', 'data', 'employees'), where('empId', '==', val), limit(1));
-                    const qs = await getDocs(empQ);
-                    if (!qs.empty) {
-                        emp = { id: qs.docs[0].id, ...qs.docs[0].data() };
-                    }
-                }
-            } catch (err) {
-                console.error("Employee Query Error: ", err);
-                window.showToast("Network Error: Verification taking too long.", "error");
-                document.getElementById('result-modal').classList.add('hidden');
-                return;
+            // Instant memory lookup ensures lightning fast scanning speed
+            let emp = personnelMap[val];
+            if (!emp) {
+                const foundKey = Object.keys(personnelMap).find(key => personnelMap[key].empId === val);
+                if (foundKey) emp = { id: foundKey, ...personnelMap[foundKey] };
+            } else {
+                emp = { id: val, ...emp };
             }
 
             if (!emp) {
@@ -444,7 +443,7 @@
             const company = String(emp.companyName || emp.company || '').toUpperCase();
             const isAlcEmp = company.includes('ALC');
 
-            // --- Enforce Tab Rules ---
+            // --- Enforce Strict ALC Rules ---
             if (scanMode === 'ALC' && !isAlcEmp) {
                 return showScanResultModal('MODE CONFLICT', 'Standard personnel must use Standard Check-in.', 'warning');
             }
@@ -452,12 +451,11 @@
                 return showScanResultModal('MODE CONFLICT', 'ALC personnel require meal selection. Switch to ALC Menu.', 'warning');
             }
 
-            // Meal Setup & Costs
             let mealName = null;
             let appliedCost = 0;
 
             if (scanMode === 'ALC') {
-                mealName = document.getElementById('alc-meal-select').value;
+                mealName = document.getElementById('alc-meal-select')?.value;
                 if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select an ALC meal variety.', 'warning');
                 appliedCost = parseFloat(alcMealItems[mealName]) || 0;
             } else {
@@ -475,7 +473,7 @@
                     account: emp.accountName || emp.account || '',
                     site: emp.site || '-',
                     issuedDate: todayStr,
-                    date: todayStr,
+                    date: todayStr, 
                     status: 'ISSUED',
                     mealRedeemed: false,
                     issuedAt: serverTimestamp(),
@@ -493,13 +491,15 @@
 
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), payload);
                 
-                // Reset ALC Scanner Dropdown
                 if (scanMode === 'ALC') {
-                    document.getElementById('alc-meal-select').value = "";
-                    document.getElementById('scanner-wrapper').classList.add('hidden');
-                    document.getElementById('scanner-helper-text').innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Ensure meal is selected before scanning';
+                    const alcSelect = document.getElementById('alc-meal-select');
+                    if (alcSelect) alcSelect.value = "";
+                    const scannerWrapper = document.getElementById('scanner-wrapper');
+                    if (scannerWrapper) scannerWrapper.classList.add('hidden');
+                    const helper = document.getElementById('scanner-helper-text');
+                    if (helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Ensure meal is selected before scanning';
                 }
-
+                
                 const mealMsg = mealName ? `\nSelected: ${mealName}` : '';
                 showScanResultModal('ENTRY APPROVED', `${emp.name}${mealMsg}`, 'success');
             } catch (e) {
@@ -508,12 +508,25 @@
             }
         };
 
+        // --- SPEED TRAP: Block Human Typing, Only Allow Fast Scanner Input ---
         window.handleScannerInput = (event) => {
+            const currentTime = Date.now();
+            
+            // If it has been more than 60ms since the last keypress (and it's not the Enter key)
+            // It means a human is typing manually. We instantly clear the field.
+            if (currentTime - lastKeyTime > 60 && event.key !== 'Enter') {
+                event.target.value = '';
+            }
+            lastKeyTime = currentTime;
+
             if (event.key === 'Enter') {
+                event.preventDefault();
                 if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
-                executeScan(event.target.value.trim().toUpperCase());
+                
+                const val = event.target.value.trim().toUpperCase();
+                if (val.length >= 2) executeScan(val);
+                
                 event.target.value = ''; 
-                event.target.focus();
             }
         };
         
@@ -524,38 +537,32 @@
                 if (val.length >= 2) { 
                     executeScan(val);
                     event.target.value = ''; 
-                    event.target.focus();
                 }
-            }, 10);
+            }, 200); // 200ms debounce for scanners that don't send Enter key
         };
 
         window.keepFocus = (elementId) => {
             setTimeout(() => {
                 const el = document.getElementById(elementId);
+                if (!el) return;
                 const isAttendanceView = !document.getElementById('view-attendance').classList.contains('hidden');
                 
                 const activeEl = document.activeElement;
                 const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
-                const activeId = activeEl ? activeEl.id : '';
                 
-                // Don't steal focus if the user is typing in the search bar or interacting with the dropdown
-                if (activeTag === 'select' || activeTag === 'input' || activeTag === 'textarea') {
-                    if (activeId !== 'attendance-scanner') return; 
-                }
+                // Do not steal focus if user is actively searching or using dropdown
+                if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== elementId) return; 
 
                 const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
-                const isContainerHidden = document.getElementById('scanner-wrapper') ? document.getElementById('scanner-wrapper').classList.contains('hidden') : false;
 
-                if (el && isAttendanceView && !isContainerHidden && !isCameraActive) {
+                if (isAttendanceView && !isCameraActive) {
                     if (document.activeElement !== el) {
-                        // Prevent the soft keyboard on mobile when programmatically restoring focus
                         el.focus({ preventScroll: true });
                     }
                 }
             }, 100);
         };
 
-        // Webcam Handlers
         window.startWebcamScanner = () => {
             document.getElementById('webcam-modal').classList.remove('hidden');
             if (!html5QrcodeScanner) html5QrcodeScanner = new Html5Qrcode("reader");
@@ -580,16 +587,16 @@
         window.reviseAttendance = async (tokenId, empName, status) => {
             if (!auth.currentUser || !loggedInSysUser) return;
             
-            // Programmatic Guard
             const role = loggedInSysUser?.role || SYSTEM_USERS[loggedInSysUser?.username]?.role || 'USER';
             const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
+            
             if (!isAdmin) {
                 window.showToast(`Unauthorized: Only Administrators can reverse scans.`, 'error');
                 return;
             }
 
             if (status === 'CONSUMED') {
-                window.showToast(`Cannot revise: ${empName} has already redeemed their meal at the counter.`, 'error');
+                window.showToast(`Cannot revise: ${empName} has already redeemed their meal.`, 'error');
                 return;
             }
 
@@ -606,7 +613,7 @@
         };
     </script>
 </head>
-<body class="bg-[#0B1120] text-slate-100 font-sans h-[100dvh] flex flex-col overflow-hidden transition-colors duration-500" onclick="keepFocus('attendance-scanner')">
+<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500" onclick="keepFocus('attendance-scanner')">
 
     <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
 
@@ -614,7 +621,7 @@
     <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800 shrink-0">
         <div class="container mx-auto px-6 py-4 flex justify-between items-center">
             <div class="flex items-center gap-4">
-                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50 shadow-sm border border-slate-700/50">
                     <i class="fas fa-arrow-left"></i>
                 </button>
                 <div class="bg-blue-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(37,99,235,0.4)]">
@@ -624,21 +631,19 @@
             </div>
             
             <div class="flex items-center gap-4">
-                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-emerald-400 tracking-wider">
-                    <i class="fas fa-circle text-[8px] mr-1 align-middle animate-pulse"></i> LIVE
+                <div class="hidden md:flex text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-emerald-400 tracking-wider items-center">
+                    <div class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse mr-2"></div> LIVE SYNC
                 </div>
             </div>
         </div>
     </nav>
 
-    <main class="flex-1 min-h-0 flex flex-col relative">
+    <main class="flex-1 flex flex-col relative">
         
-        <!-- LOADING VIEW (Updated to match requested animation) -->
+        <!-- LOADING VIEW -->
         <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
             <div class="relative flex items-center justify-center mb-6">
-                <!-- Outer Pulse Ring -->
                 <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
-                <!-- Inner Gradient Circle with Icon -->
                 <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
                     <i class="fas fa-user-check text-white text-3xl"></i>
                 </div>
@@ -655,14 +660,14 @@
                 <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
                 <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
                 <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
-                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase shadow-sm">
                     Return to Dashboard
                 </button>
             </div>
         </div>
 
         <!-- MAIN ATTENDANCE VIEW -->
-        <div id="view-attendance" class="hidden container mx-auto px-4 py-6 animate-fade-in flex-1 flex flex-col min-h-0 overflow-y-auto hide-scroll">
+        <div id="view-attendance" class="hidden container mx-auto px-4 py-6 animate-fade-in flex-1 flex flex-col">
             
             <div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 shrink-0 gap-4">
                 <div>
@@ -675,7 +680,6 @@
 
             <!-- SCANNER MODULE -->
             <div class="mb-6 w-full max-w-5xl mx-auto shrink-0">
-                <!-- Sleek Tabs -->
                 <div class="flex justify-center mb-6">
                     <div class="bg-slate-800/80 p-1.5 rounded-xl flex gap-1 border border-slate-700 shadow-sm backdrop-blur-md">
                         <button id="btn-mode-std" onclick="switchScanMode('STD')" class="px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-blue-600 text-white shadow-md flex items-center gap-2">
@@ -687,7 +691,6 @@
                     </div>
                 </div>
 
-                <!-- Scanner Card -->
                 <div class="bg-[#0f172a]/60 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-6 lg:p-10 flex flex-col items-center justify-center min-h-[220px]">
                     
                     <!-- ALC Selection Dropdown -->
@@ -700,25 +703,22 @@
                         </div>
                     </div>
 
-                    <!-- Scanner Wrapper -->
                     <div id="scanner-wrapper" class="w-full flex flex-col items-center animate-fade-in">
-                        <!-- Scan Input Field -->
                         <div id="scanner-container" class="w-full relative max-w-3xl">
                             <div class="absolute inset-y-0 left-6 sm:left-10 flex items-center pointer-events-none">
                                 <i id="scanner-input-icon" class="fas fa-qrcode text-blue-500 text-xl md:text-2xl transition-colors"></i>
                             </div>
+                            <!-- 'pointer-events-none', 'select-none', and 'onpaste' prevent human typing and copying -->
                             <input type="text" id="attendance-scanner" inputmode="none" placeholder="SCAN PERSONNEL QR . . ." 
-                                class="w-full pl-16 sm:pl-20 pr-6 py-5 sm:py-6 border-2 border-blue-500/60 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-lg sm:text-2xl tracking-[0.15em] sm:tracking-[0.25em] outline-none transition scanner-input shadow-[0_0_15px_rgba(59,130,246,0.15)] text-white" 
-                                onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus('attendance-scanner')" autocomplete="off">
+                                class="w-full pl-16 sm:pl-20 pr-6 py-5 sm:py-6 border-2 border-blue-500/60 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-lg sm:text-2xl tracking-[0.15em] sm:tracking-[0.25em] outline-none transition scanner-input shadow-[0_0_15px_rgba(59,130,246,0.15)] text-white pointer-events-none select-none" 
+                                onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus('attendance-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
                         </div>
                         
-                        <!-- Optical Camera Link Button -->
                         <button onclick="startWebcamScanner()" class="mt-5 w-full max-w-sm flex items-center justify-center text-blue-400 hover:text-blue-300 font-bold text-sm bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
                             <i class="fas fa-camera text-lg mr-2"></i> Launch Optical Scanner
                         </button>
                     </div>
-                    
-                    <p id="scanner-helper-text" class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-4"><i class="fas fa-keyboard mr-1"></i> Awaiting scanner input...</p>
+                    <p id="scanner-helper-text" class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-4"><i class="fas fa-keyboard mr-1"></i> Automatic scanner input mode active...</p>
                 </div>
             </div>
 
@@ -743,7 +743,7 @@
             </div>
 
             <!-- List Area Header -->
-            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6">
                 <h3 class="text-base font-bold text-white"><i class="fas fa-list-ul mr-2 text-slate-400"></i> Issued Tokens Ledger</h3>
                 <div class="w-full md:w-80">
                     <div class="bg-slate-800 px-4 py-2.5 rounded-xl border border-slate-700 shadow-sm flex items-center gap-3 w-full transition-shadow focus-within:ring-2 focus-within:ring-blue-500/50">
@@ -753,10 +753,10 @@
                 </div>
             </div>
 
-            <!-- Scrolling List Area -->
-            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col h-[400px] lg:h-[500px] overflow-hidden">
-                <div class="overflow-y-auto p-4 space-y-3 hide-scroll flex-grow" id="attendance-list">
-                    <!-- Javascript populates ledger here. Removed the syncing text since it waits for data loaded -->
+            <!-- Expanding List Area (Page scrolling enabled) -->
+            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1">
+                <div class="p-4 flex-grow" id="attendance-list">
+                    <!-- Data populated reactively via JavaScript -->
                 </div>
             </div>
             
