@@ -283,15 +283,29 @@
                 calculateDashboardStats();
             }, (error) => console.error("Error fetching settings:", error));
 
-            // 3. Fetch Tokens
+            // 3. Fetch Tokens (Fetch all, filter in memory to bypass complex query rules causing backend timeouts)
+            const todayStr = getTodayStr();
+            const currentMonthStart = todayStr.substring(0, 7) + '-01';
+            
             const tokensRef = collection(db, 'artifacts', appId, 'public', 'data', 'tokens');
+            
             onSnapshot(tokensRef, (snap) => {
                 allTokens = [];
-                snap.forEach(doc => allTokens.push(doc.data()));
+                snap.forEach(doc => {
+                    const data = doc.data();
+                    const logDateStr = data.issuedDate || data.date;
+                    // Filter in memory to optimize dashboard rendering and prevent offline/timeout errors
+                    if (logDateStr && logDateStr >= currentMonthStart) {
+                        allTokens.push(data);
+                    }
+                });
                 calculateDashboardStats();
             }, (error) => console.error("Error fetching tokens:", error));
         };
 
+        // Standard init path
+        initAuth();
+        
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 if (!dataLoaded) loadData();
@@ -299,8 +313,6 @@
                 if (!didInstantBoot) showView('loading');
             }
         });
-
-        initAuth();
 
         function calculateDashboardStats() {
             const todayStr = getTodayStr();
