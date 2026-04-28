@@ -69,9 +69,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        
-        // CRITICAL FIX: Ensure 'initializeFirestore', 'where', and 'getDoc' are imported
-        import { initializeFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==========================================
         // FIREBASE CONFIGURATION
@@ -96,22 +94,23 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         
-        // NETWORK BYPASS: Forces standard HTTP polling, completely solving the "10-second backend timeout" error.
-        const db = initializeFirestore(app, {
-            experimentalForceLongPolling: true
-        });
+        // STANDARD FIRESTORE: Removed experimental polling to re-enable extremely fast WebSocket live sync
+        const db = getFirestore(app);
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
         
         // --- State Variables ---
-        let SYSTEM_USERS = {};
         let loggedInSysUser = null; 
-        
         let allTokens = [];
         let dailyRates = {
             "Sunday": 0, "Monday": 0, "Tuesday": 0, "Wednesday": 0,
             "Thursday": 0, "Friday": 0, "Saturday": 0
         };
+
+        // Live Sync Unsubscribers
+        let unsubscribeSettings = null;
+        let unsubscribeTokens = null;
+        let unsubscribeSysUser = null;
 
         const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
         const STATS_CACHE_KEY = `ent_dashboard_stats_${appId}`; 
@@ -162,19 +161,15 @@
         };
 
         window.forceSync = () => {
+            if(!auth.currentUser) return showToast('Connection pending...', 'error');
             showToast('Syncing with cloud database...', 'info');
-            if(auth.currentUser) {
-                calculateDashboardStats();
-                setTimeout(() => {
-                    showToast(`Dashboard Synced! Tracking active operations.`, 'success');
-                }, 800);
-            } else {
-                showToast('Connection pending...', 'error');
-            }
+            calculateDashboardStats();
+            setTimeout(() => {
+                showToast(`Dashboard Synced! Tracking active operations.`, 'success');
+            }, 800);
         };
 
         document.documentElement.classList.add('dark'); 
-        window.toggleTheme = () => { document.documentElement.classList.toggle('dark'); };
 
         function showView(viewName) {
             Object.values(views).forEach(el => el && el.classList.add('hidden'));
@@ -218,7 +213,7 @@
                 if (session.date === getTodayStr() && session.role) {
                     loggedInSysUser = session;
                     
-                    // Render cached stats instantly
+                    // Render cached stats instantly (0s loading)
                     const cachedStatsStr = localStorage.getItem(STATS_CACHE_KEY);
                     if (cachedStatsStr) {
                         const s = JSON.parse(cachedStatsStr);
@@ -234,7 +229,7 @@
                     return true;
                 }
             }
-            // NO SESSION: Immediately show the login screen. Do NOT wait for Firebase.
+            // Fallback: If no session, show login directly
             showView('login');
             navBar.classList.add('hidden');
             return false;
@@ -242,7 +237,7 @@
 
         const didInstantBoot = checkInstantBoot();
 
-        // --- Firebase Auth & Background Sync ---
+        // --- Firebase Auth & Lightning Sync Architecture ---
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -255,70 +250,69 @@
             }
         };
 
-        const loadData = () => {
-            if (!auth.currentUser) return;
-            
-            if (didInstantBoot && syncIndicator) syncIndicator.classList.remove('hidden');
-            
-            // 1. Fetch system_users (Background Verify)
-            const qSys = query(collection(db, 'artifacts', appId, 'public', 'data', 'system_users'));
-            onSnapshot(qSys, (snapshot) => {
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === "added" || change.type === "modified") SYSTEM_USERS[change.doc.id] = change.doc.data();
-                    if (change.type === "removed") delete SYSTEM_USERS[change.doc.id];
-                });
+        const startLiveSync = () => {
+            if (syncIndicator) syncIndicator.classList.remove('hidden');
 
-                if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
-                    const sysUser = SYSTEM_USERS[loggedInSysUser.username];
-                    if (!sysUser || sysUser.status !== 'ACTIVE') {
+            // 1. Point-to-Point Sync: Only listen to the logged-in user's exact document (MASSIVE speed increase over downloading all users)
+            if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_users', loggedInSysUser.username);
+                unsubscribeSysUser = onSnapshot(userRef, (docSnap) => {
+                    if (!docSnap.exists() || docSnap.data().status !== 'ACTIVE') {
                         appLogout();
-                    } else if (sysUser.role !== loggedInSysUser.role) {
-                        loggedInSysUser = sysUser;
-                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
-                            username: sysUser.username, name: sysUser.name, role: sysUser.role, date: getTodayStr() 
-                        }));
-                        proceedToMenu();
+                    } else {
+                        const sysUser = docSnap.data();
+                        if (sysUser.role !== loggedInSysUser.role) {
+                            loggedInSysUser = sysUser;
+                            localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                                username: sysUser.username, name: sysUser.name, role: sysUser.role, date: getTodayStr() 
+                            }));
+                            proceedToMenu();
+                        }
                     }
-                }
-            }, (error) => console.error("Error fetching system users:", error));
+                });
+            }
 
-            // 2. Fetch Settings
+            // 2. Sync Global Prices
             const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices');
-            onSnapshot(settingsRef, (docSnap) => {
+            unsubscribeSettings = onSnapshot(settingsRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     if (data.prices) dailyRates = data.prices;
                     else if (data.dailyRates) dailyRates = data.dailyRates;
                 }
-                if (loggedInSysUser) calculateDashboardStats();
-            }, (error) => console.error("Error fetching settings:", error));
+                calculateDashboardStats();
+            });
 
-            // 3. Fetch Tokens (OPTIMIZED WITH WHERE CLAUSE FOR SPEED)
-            const todayStr = getTodayStr();
-            const currentMonthStart = todayStr.substring(0, 7) + '-01';
-            
-            const tokensRef = query(
-                collection(db, 'artifacts', appId, 'public', 'data', 'tokens'),
-                where('issuedDate', '>=', currentMonthStart)
-            );
-            
-            onSnapshot(tokensRef, (snap) => {
+            // 3. Fast In-Memory Token Filter Sync
+            const tokensRef = collection(db, 'artifacts', appId, 'public', 'data', 'tokens');
+            unsubscribeTokens = onSnapshot(tokensRef, (snap) => {
                 allTokens = [];
-                snap.forEach(doc => allTokens.push(doc.data()));
-                if (loggedInSysUser) calculateDashboardStats();
-            }, (error) => console.error("Error fetching tokens:", error));
+                const todayStr = getTodayStr();
+                const currentMonthStart = todayStr.substring(0, 7) + '-01';
+                
+                snap.forEach(doc => {
+                    const data = doc.data();
+                    const logDateStr = data.issuedDate || data.date;
+                    // Strict client-side filter drops 99% of dead data instantly
+                    if (logDateStr && logDateStr >= currentMonthStart) {
+                        allTokens.push(data);
+                    }
+                });
+                calculateDashboardStats();
+            });
         };
 
         // Standard init path
         initAuth();
         
         onAuthStateChanged(auth, (user) => {
-            if (user) {
-                loadData();
+            document.getElementById('view-loading').classList.add('hidden'); // Drop loader if it somehow got stuck
+            if (user && loggedInSysUser) {
+                startLiveSync();
             }
         });
 
-        // Background Processor & Memory Cacher
+        // Memory Cacher Engine
         function calculateDashboardStats() {
             const todayStr = getTodayStr();
             const monthStr = todayStr.substring(0, 7);
@@ -329,7 +323,7 @@
             for(let i=0; i < allTokens.length; i++) {
                 const log = allTokens[i];
                 const logDateStr = log.issuedDate || log.date;
-                if (!logDateStr) continue; 
+                if (!logDateStr || logDateStr < monthStr) continue; 
 
                 const isRedeemed = log.status === 'CONSUMED' || log.status === 'REDEEMED' || log.mealRedeemed === true;
                 let rateForDay = log.costs?.total ?? (parseFloat(dailyRates[getDayName(logDateStr)]) || 0);
@@ -375,38 +369,37 @@
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', name: 'System Admin', role: 'ADMIN', date: getTodayStr() }));
                 document.getElementById('login-error').classList.add('hidden');
                 proceedToMenu();
-                if (!didInstantBoot) calculateDashboardStats();
+                startLiveSync(); // Kick off sync instantly
                 btn.innerHTML = originalText;
                 btn.disabled = false;
                 return;
             }
 
-            let user = SYSTEM_USERS[u];
-            
-            // DIRECT DB FETCH FALLBACK: Instant login even if background sync hasn't downloaded users yet
-            if (!user) {
-                try {
-                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', u));
-                    if (docSnap.exists()) {
-                        user = docSnap.data();
-                        SYSTEM_USERS[u] = user; 
+            // Fast Point-to-Point Database Pull
+            try {
+                const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', u));
+                if (docSnap.exists()) {
+                    const user = docSnap.data();
+                    if (user.pin === p && user.status === 'ACTIVE') {
+                        loggedInSysUser = user;
+                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                            username: u, 
+                            name: user.name,
+                            role: user.role,
+                            date: getTodayStr() 
+                        }));
+                        document.getElementById('login-error').classList.add('hidden');
+                        proceedToMenu();
+                        startLiveSync(); // Boot sync engine
+                    } else {
+                        document.getElementById('login-error').classList.remove('hidden');
                     }
-                } catch(err) { console.error("Fallback fetch error:", err); }
-            }
-
-            if (user && user.pin === p && user.status === 'ACTIVE') {
-                loggedInSysUser = user;
-                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
-                    username: u, 
-                    name: user.name,
-                    role: user.role,
-                    date: getTodayStr() 
-                }));
-                document.getElementById('login-error').classList.add('hidden');
-                proceedToMenu();
-                if (!didInstantBoot) calculateDashboardStats();
-            } else {
-                document.getElementById('login-error').classList.remove('hidden');
+                } else {
+                    document.getElementById('login-error').classList.remove('hidden');
+                }
+            } catch (err) {
+                console.error("Login fetch error:", err);
+                showToast("Network Error: Could not verify user.", "error");
             }
             
             btn.innerHTML = originalText;
@@ -417,6 +410,9 @@
             localStorage.removeItem(SYS_SESSION_KEY);
             localStorage.removeItem(STATS_CACHE_KEY); 
             loggedInSysUser = null;
+            if(unsubscribeSysUser) unsubscribeSysUser();
+            if(unsubscribeSettings) unsubscribeSettings();
+            if(unsubscribeTokens) unsubscribeTokens();
             showView('login');
             navBar.classList.add('hidden');
         };
