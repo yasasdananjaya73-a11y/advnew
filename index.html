@@ -69,7 +69,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==========================================
         // FIREBASE CONFIGURATION
@@ -93,14 +93,14 @@
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
-        
-        // STANDARD FIRESTORE: Removed experimental polling to re-enable extremely fast WebSocket live sync
         const db = getFirestore(app);
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
         
         // --- State Variables ---
+        let SYSTEM_USERS = {};
         let loggedInSysUser = null; 
+        
         let allTokens = [];
         let dailyRates = {
             "Sunday": 0, "Monday": 0, "Tuesday": 0, "Wednesday": 0,
@@ -123,7 +123,6 @@
         const navBar = document.getElementById('main-nav');
         const roleDisplay = document.getElementById('role-display');
         const adminControls = document.getElementById('admin-controls');
-        const syncIndicator = document.getElementById('sync-indicator');
 
         function formatRs(amount) {
             return 'Rs. ' + amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -160,14 +159,42 @@
             }, 3000);
         };
 
-        window.forceSync = () => {
-            if(!auth.currentUser) return showToast('Connection pending...', 'error');
-            showToast('Syncing with cloud database...', 'info');
-            calculateDashboardStats();
-            setTimeout(() => {
-                showToast(`Dashboard Synced! Tracking active operations.`, 'success');
-            }, 800);
-        };
+        // --- Visual Live Sync Progress Animation ---
+        window.syncAnimating = false;
+        function triggerSyncAnimation() {
+            const el = document.getElementById('sync-percent');
+            const bar = document.getElementById('sync-progress-bar');
+            const indicator = document.getElementById('sync-indicator');
+            
+            if (!el || !bar || !indicator) return;
+            
+            // Prevent restarting animation if one is already running
+            if (!indicator.classList.contains('hidden') && window.syncAnimating) return;
+            
+            indicator.classList.remove('hidden');
+            indicator.classList.add('flex');
+            window.syncAnimating = true;
+            
+            let p = 0;
+            el.textContent = '0%';
+            bar.style.width = '0%';
+            
+            clearInterval(window.syncInterval);
+            window.syncInterval = setInterval(() => {
+                p += Math.floor(Math.random() * 20) + 10; 
+                if (p >= 100) {
+                    p = 100;
+                    clearInterval(window.syncInterval);
+                    setTimeout(() => {
+                        indicator.classList.add('hidden');
+                        indicator.classList.remove('flex');
+                        window.syncAnimating = false;
+                    }, 1200); // Wait 1.2s at 100% before hiding
+                }
+                el.textContent = p + '%';
+                bar.style.width = p + '%';
+            }, 30); // Fast sweep speed
+        }
 
         document.documentElement.classList.add('dark'); 
 
@@ -251,9 +278,7 @@
         };
 
         const startLiveSync = () => {
-            if (syncIndicator) syncIndicator.classList.remove('hidden');
-
-            // 1. Point-to-Point Sync: Only listen to the logged-in user's exact document (MASSIVE speed increase over downloading all users)
+            // 1. Point-to-Point Sync: Only listen to the logged-in user's exact document
             if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
                 const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_users', loggedInSysUser.username);
                 unsubscribeSysUser = onSnapshot(userRef, (docSnap) => {
@@ -293,7 +318,7 @@
                 snap.forEach(doc => {
                     const data = doc.data();
                     const logDateStr = data.issuedDate || data.date;
-                    // Strict client-side filter drops 99% of dead data instantly
+                    // Strict client-side filter drops dead data instantly
                     if (logDateStr && logDateStr >= currentMonthStart) {
                         allTokens.push(data);
                     }
@@ -350,7 +375,8 @@
             document.getElementById('stat-month-redeemed').textContent = mRedeemed;
             document.getElementById('stat-month-val').textContent = formatRs(mValue);
 
-            if (syncIndicator) syncIndicator.classList.add('hidden');
+            // Fire the sync animation UI to let user know data updated
+            triggerSyncAnimation();
         }
 
         window.appLogin = async (e) => {
@@ -625,19 +651,22 @@
         <div id="view-menu" class="hidden container mx-auto px-4 sm:px-6 py-8 animate-fade-in-up relative z-10">
             
             <div class="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div class="flex items-center gap-4">
+                <div class="flex items-center justify-between w-full">
                     <div>
                         <h2 class="text-2xl font-bold text-slate-800 dark:text-white tracking-tight">Operations Dashboard</h2>
                         <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Real-time canteen utilization and financial metrics</p>
                     </div>
-                    <!-- Hidden Background Sync Indicator -->
-                    <div id="sync-indicator" class="hidden items-center text-[10px] uppercase tracking-widest text-blue-400 font-bold bg-blue-500/10 border border-blue-500/20 px-3 py-1.5 rounded-full shadow-inner animate-pulse">
-                        <i class="fas fa-circle-notch fa-spin mr-2"></i> Syncing
+                    
+                    <!-- Auto-Sync Loading Percentage Indicator -->
+                    <div id="sync-indicator" class="hidden flex-col items-end gap-1.5 bg-blue-500/5 border border-blue-500/10 px-4 py-2.5 rounded-xl ml-4">
+                        <div class="flex items-center text-[10px] uppercase tracking-widest text-blue-400 font-bold">
+                            <i class="fas fa-satellite-dish animate-pulse mr-2"></i> Auto-Syncing <span id="sync-percent" class="ml-2 w-7 text-right text-blue-300 font-mono">0%</span>
+                        </div>
+                        <div class="w-32 sm:w-40 h-1.5 bg-slate-800/50 rounded-full overflow-hidden shadow-inner border border-slate-700/50">
+                            <div id="sync-progress-bar" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-75 ease-out w-0 shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
+                        </div>
                     </div>
                 </div>
-                <button onclick="forceSync()" class="bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 px-4 py-2 rounded-lg border border-blue-500/20 text-sm font-semibold flex items-center transition-colors cursor-pointer">
-                    <i class="fas fa-sync-alt mr-2 hover:animate-spin"></i> Force Sync
-                </button>
             </div>
             
             <!-- Real Time Stats Overview -->
