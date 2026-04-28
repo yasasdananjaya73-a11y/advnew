@@ -92,6 +92,13 @@
         let html5QrcodeScanner = null;
         let scanDebounceTimer = null;
 
+        // Loading states to ensure all data arrives before rendering
+        let isSysUsersLoaded = false;
+        let isTokensLoaded = false;
+        let isPricesLoaded = false;
+        let isAlcLoaded = false;
+        let initialRenderDone = false;
+
         document.documentElement.classList.add('dark');
 
         window.showToast = (message, type = 'success') => {
@@ -150,15 +157,33 @@
             } catch (e) { window.history.back(); }
         };
 
+        function checkDataLoaded() {
+            if (isSysUsersLoaded && isTokensLoaded && isPricesLoaded && isAlcLoaded) {
+                window.renderLedger();
+                
+                if (!initialRenderDone) {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-attendance').classList.remove('hidden');
+                    setTimeout(() => {
+                        const scanner = document.getElementById('attendance-scanner');
+                        if(scanner) scanner.focus();
+                    }, 300);
+                    initialRenderDone = true;
+                }
+            }
+        }
+
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
                 if (sessionStr || window.location.protocol === 'blob:') {
                     loggedInSysUser = sessionStr ? JSON.parse(sessionStr) : { username: 'ADMIN' };
-                    document.getElementById('view-loading').classList.add('hidden');
-                    document.getElementById('view-attendance').classList.remove('hidden');
+                    
+                    // Keep loading screen active until everything is fetched
+                    document.getElementById('view-loading').classList.remove('hidden');
+                    document.getElementById('view-attendance').classList.add('hidden');
+                    
                     loadData();
-                    setTimeout(() => document.getElementById('attendance-scanner').focus(), 300);
                 } else {
                     document.getElementById('view-loading').classList.add('hidden');
                     document.getElementById('view-unauthorized').classList.remove('hidden');
@@ -169,19 +194,17 @@
         initAuth();
 
         const loadData = () => {
-            if (!auth.currentUser) return; // Guard against offline/unauthenticated fetch
+            if (!auth.currentUser) return;
 
-            // Load System Users to Verify Admin Privileges
+            // Load System Users
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'system_users'), (snap) => {
                 SYSTEM_USERS = {};
                 snap.forEach(doc => { SYSTEM_USERS[doc.id] = doc.data(); });
-                window.renderLedger(); 
+                isSysUsersLoaded = true;
+                checkDataLoaded(); 
             }, (err) => console.error("System Users fetch error:", err));
 
-            // Note: We deliberately DO NOT download the entire 'employees' collection here anymore.
-            // This massively speeds up system load times. Employees are queried on-the-fly during scanning.
-
-            // Fetch TOKENS collection as per index (90).html path mapping
+            // Fetch TOKENS collection
             const today = getTodayStr();
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), (snap) => {
                 todayTokens = [];
@@ -191,21 +214,27 @@
                         todayTokens.push({ id: doc.id, ...data });
                     }
                 });
-                window.renderLedger();
+                isTokensLoaded = true;
+                checkDataLoaded();
             }, (err) => console.error("Tokens fetch error:", err));
 
-            // Fetch SETTINGS collection to acquire meal_prices & alc configuration
+            // Fetch SETTINGS collection to acquire meal_prices
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices'), (docSnap) => {
                 if (docSnap.exists() && docSnap.data().prices) {
                     Object.assign(WEEKLY_PRICES, docSnap.data().prices);
                 }
+                isPricesLoaded = true;
+                checkDataLoaded();
             }, (err) => console.error("Prices fetch error:", err));
             
+            // Fetch ALC Settings
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen'), (docSnap) => {
                 if (docSnap.exists() && docSnap.data().alcMealItems) {
                     alcMealItems = docSnap.data().alcMealItems;
                     updateAlcDropdown();
                 }
+                isAlcLoaded = true;
+                checkDataLoaded();
             }, (err) => console.error("ALC settings fetch error:", err));
         };
 
@@ -604,14 +633,18 @@
 
     <main class="flex-1 min-h-0 flex flex-col relative">
         
-        <!-- LOADING VIEW -->
+        <!-- LOADING VIEW (Updated to match requested animation) -->
         <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
-            <div class="relative flex items-center justify-center">
-                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-blue-500 opacity-20"></div>
-                <div class="relative inline-flex rounded-full h-10 w-10 bg-blue-600 shadow-[0_0_30px_rgba(37,99,235,0.8)]"></div>
+            <div class="relative flex items-center justify-center mb-6">
+                <!-- Outer Pulse Ring -->
+                <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
+                <!-- Inner Gradient Circle with Icon -->
+                <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
+                    <i class="fas fa-user-check text-white text-3xl"></i>
+                </div>
             </div>
-            <div class="mt-8 text-center space-y-2">
-                <h2 class="text-white font-extrabold text-2xl tracking-tight">Authorizing Module...</h2>
+            <div class="text-center space-y-2">
+                <h2 class="text-white font-extrabold text-3xl tracking-tight">Attendance<span class="text-blue-500">Terminal</span></h2>
             </div>
         </div>
 
@@ -720,13 +753,10 @@
                 </div>
             </div>
 
-            <!-- Scrolling List Area (Fixed height constraint to ensure internal scrolling) -->
+            <!-- Scrolling List Area -->
             <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col h-[400px] lg:h-[500px] overflow-hidden">
                 <div class="overflow-y-auto p-4 space-y-3 hide-scroll flex-grow" id="attendance-list">
-                    <div class="text-center py-20 text-slate-400">
-                        <i class="fas fa-circle-notch fa-spin text-3xl mb-4 text-blue-500"></i>
-                        <p class="font-medium tracking-wide">Syncing Personnel Database...</p>
-                    </div>
+                    <!-- Javascript populates ledger here. Removed the syncing text since it waits for data loaded -->
                 </div>
             </div>
             
