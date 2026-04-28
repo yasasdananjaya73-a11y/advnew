@@ -21,31 +21,20 @@
             theme: {
                 extend: {
                     colors: { 
-                        slate: { 850: '#152033', 900: '#0f172a', 950: '#020617' },
-                        coats: { 500: '#0055a4', 600: '#004380' } 
+                        slate: { 850: '#152033', 900: '#0f172a', 950: '#020617' }
                     },
                     fontFamily: {
                         sans: ['Inter', 'sans-serif'],
                         mono: ['JetBrains Mono', 'monospace']
                     },
                     animation: {
-                        'float': 'float 4s ease-in-out infinite',
                         'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-                        'fade-in-up': 'fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both',
-                        'glow': 'glow 2s ease-in-out infinite alternate',
+                        'fade-in-up': 'fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both'
                     },
                     keyframes: {
-                        float: {
-                            '0%, 100%': { transform: 'translateY(0)' },
-                            '50%': { transform: 'translateY(-12px)' },
-                        },
                         fadeInUp: {
                             '0%': { opacity: '0', transform: 'translateY(20px)' },
-                            '100%': { opacity: '1', transform: 'translateY(0)' },
-                        },
-                        glow: {
-                            '0%': { boxShadow: '0 0 10px rgba(59, 130, 246, 0.2)' },
-                            '100%': { boxShadow: '0 0 25px rgba(59, 130, 246, 0.6)' },
+                            '100%': { opacity: '1', transform: 'translateY(0)' }
                         }
                     }
                 }
@@ -74,26 +63,13 @@
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
         .dark ::-webkit-scrollbar-thumb { background: #334155; }
-
-        /* Premium Glassmorphism */
-        .glass-panel {
-            background: rgba(15, 23, 42, 0.65);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-        }
-
-        /* WhatsApp Tooltip */
-        .wa-tooltip { visibility: hidden; opacity: 0; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); transform: translateX(-10px); }
-        .wa-btn:hover .wa-tooltip { visibility: visible; opacity: 1; transform: translateX(0); }
     </style>
 
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, query, onSnapshot, doc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==========================================
         // FIREBASE CONFIGURATION
@@ -119,20 +95,22 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
         
-        const targetDbAppId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
+        // Exact database tree path mapping
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
         
         // --- State Variables ---
         let SYSTEM_USERS = {};
         let loggedInSysUser = null; 
+        let dataLoaded = false;
+        
         let allTokens = [];
         let dailyRates = {
             "Sunday": 0, "Monday": 0, "Tuesday": 0, "Wednesday": 0,
             "Thursday": 0, "Friday": 0, "Saturday": 0
         };
 
-        const SYS_SESSION_KEY = `ent_sys_session_${targetDbAppId}`;
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
 
-        // View Management
         const views = {
             login: document.getElementById('view-login'), 
             menu: document.getElementById('view-menu'),
@@ -142,7 +120,6 @@
         const roleDisplay = document.getElementById('role-display');
         const adminControls = document.getElementById('admin-controls');
 
-        // Helpers
         function formatRs(amount) {
             return 'Rs. ' + amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
@@ -160,7 +137,6 @@
             return '';
         }
 
-        // --- Custom Toast Notifications ---
         window.showToast = (message, type = 'info') => {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
@@ -181,10 +157,10 @@
 
         window.forceSync = () => {
             showToast('Syncing with cloud database...', 'info');
-            if(auth.currentUser) {
+            if(dataLoaded && auth.currentUser) {
                 calculateDashboardStats();
                 setTimeout(() => {
-                    showToast(`Dashboard Synced! Tracking ${allTokens.length} data points.`, 'success');
+                    showToast(`Dashboard Synced! Tracking ${allTokens.length} active operations.`, 'success');
                 }, 800);
             } else {
                 showToast('Connection pending...', 'error');
@@ -194,25 +170,55 @@
         document.documentElement.classList.add('dark'); 
         window.toggleTheme = () => { document.documentElement.classList.toggle('dark'); };
 
+        function showView(viewName) {
+            Object.values(views).forEach(el => el && el.classList.add('hidden'));
+            if(views[viewName]) {
+                views[viewName].classList.remove('hidden');
+                if (viewName === 'login') views[viewName].classList.add('flex');
+            }
+        }
+
+        function proceedToMenu() {
+            showView('menu');
+            navBar.classList.remove('hidden');
+            if(roleDisplay) roleDisplay.textContent = `${loggedInSysUser.name} | ${loggedInSysUser.role}`;
+            
+            const role = loggedInSysUser.role;
+            
+            document.getElementById('tile-attendance').classList.toggle('hidden', role !== 'ADMIN' && role !== 'SECURITY');
+            document.getElementById('tile-canteen').classList.toggle('hidden', role !== 'ADMIN' && role !== 'CANTEEN');
+            document.getElementById('tile-analytics').classList.toggle('hidden', role !== 'ADMIN' && role !== 'REPORT_VIEWER');
+            
+            document.getElementById('tile-planner').classList.toggle('hidden', role !== 'ADMIN');
+            document.getElementById('tile-roster').classList.toggle('hidden', role !== 'ADMIN');
+            document.getElementById('tile-access').classList.toggle('hidden', role !== 'ADMIN');
+            
+            if (role === 'ADMIN') {
+                adminControls.classList.remove('hidden');
+                adminControls.classList.add('flex');
+            } else {
+                adminControls.classList.add('hidden');
+                adminControls.classList.remove('flex');
+            }
+        }
+
         // ==========================================
         // INSTANT ZERO-LOADING APP ROUTING
         // ==========================================
-        const instantBootCheck = () => {
+        const checkInstantBoot = () => {
             const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
             if (sessionStr) {
                 const session = JSON.parse(sessionStr);
                 if (session.date === getTodayStr() && session.role) {
                     loggedInSysUser = session;
-                    proceedToMenu(); // Instantly show dashboard
-                } else {
-                    showView('login');
+                    proceedToMenu();
+                    return true;
                 }
-            } else {
-                showView('login');
             }
+            return false;
         };
-        // Call immediately to bypass any loading screens on 'back' button
-        instantBootCheck();
+
+        const didInstantBoot = checkInstantBoot();
 
         // --- Firebase Auth & Live Sync ---
         const initAuth = async () => {
@@ -230,53 +236,67 @@
         const loadData = () => {
             if (!auth.currentUser) return;
             
-            // 1. Fetch system_users (Background Verify)
-            const qSys = query(collection(db, 'artifacts', targetDbAppId, 'public', 'data', 'system_users'));
+            // 1. Fetch system_users (Guarantees data is ready before Login is shown)
+            const qSys = query(collection(db, 'artifacts', appId, 'public', 'data', 'system_users'));
             onSnapshot(qSys, (snapshot) => {
                 snapshot.docChanges().forEach((change) => {
                     if (change.type === "added" || change.type === "modified") SYSTEM_USERS[change.doc.id] = change.doc.data();
                     if (change.type === "removed") delete SYSTEM_USERS[change.doc.id];
                 });
 
-                // Security Check: Ensure session hasn't been revoked by Admin
-                if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
-                    const verifiedUser = SYSTEM_USERS[loggedInSysUser.username];
-                    if (!verifiedUser || verifiedUser.status !== 'ACTIVE') {
-                        appLogout();
-                    } else if (verifiedUser.role !== loggedInSysUser.role) {
-                        // Role changed, silently update
-                        loggedInSysUser = verifiedUser;
-                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
-                            username: verifiedUser.username, name: verifiedUser.name, role: verifiedUser.role, date: getTodayStr() 
-                        }));
-                        proceedToMenu();
+                if (!dataLoaded) {
+                    dataLoaded = true;
+                    if (!didInstantBoot) {
+                        checkAuthRouting();
+                    } else {
+                        // Verify session hasn't been revoked by Admin during instant boot
+                        if (loggedInSysUser.username !== 'ADMIN') {
+                            const verifiedUser = SYSTEM_USERS[loggedInSysUser.username];
+                            if (!verifiedUser || verifiedUser.status !== 'ACTIVE') appLogout();
+                        }
+                    }
+                } else {
+                    // Subsequent background updates
+                    if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                        const sysUser = SYSTEM_USERS[loggedInSysUser.username];
+                        if (!sysUser || sysUser.status !== 'ACTIVE') {
+                            appLogout();
+                        } else if (sysUser.role !== loggedInSysUser.role) {
+                            loggedInSysUser = sysUser;
+                            localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                                username: sysUser.username, name: sysUser.name, role: sysUser.role, date: getTodayStr() 
+                            }));
+                            proceedToMenu();
+                        }
                     }
                 }
             }, (error) => console.error("Error fetching system users:", error));
 
             // 2. Fetch Settings
-            const settingsRef = doc(db, 'artifacts', targetDbAppId, 'public', 'data', 'settings', 'meal_prices');
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices');
             onSnapshot(settingsRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     if (data.prices) dailyRates = data.prices;
                     else if (data.dailyRates) dailyRates = data.dailyRates;
                 }
-                calculateDashboardStats(); // Live update
+                calculateDashboardStats();
             }, (error) => console.error("Error fetching settings:", error));
 
             // 3. Fetch Tokens
-            const tokensRef = collection(db, 'artifacts', targetDbAppId, 'public', 'data', 'tokens');
+            const tokensRef = collection(db, 'artifacts', appId, 'public', 'data', 'tokens');
             onSnapshot(tokensRef, (snap) => {
                 allTokens = [];
                 snap.forEach(doc => allTokens.push(doc.data()));
-                calculateDashboardStats(); // Live update
+                calculateDashboardStats();
             }, (error) => console.error("Error fetching tokens:", error));
         };
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                loadData();
+                if (!dataLoaded) loadData();
+            } else {
+                if (!didInstantBoot) showView('loading');
             }
         });
 
@@ -323,40 +343,38 @@
             document.getElementById('stat-month-val').textContent = formatRs(mValue);
         }
 
+        function checkAuthRouting() {
+            const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+            if (sessionStr) {
+                const session = JSON.parse(sessionStr);
+                const sysUser = SYSTEM_USERS[session.username];
+                
+                if (session.date === getTodayStr() && sysUser && sysUser.status === 'ACTIVE') {
+                    loggedInSysUser = sysUser;
+                    proceedToMenu();
+                    return;
+                }
+            }
+            showView('login');
+            navBar.classList.add('hidden');
+        }
+
         window.appLogin = async (e) => {
             e.preventDefault();
-            
-            const btn = document.getElementById('login-btn');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Authenticating...';
-            btn.disabled = true;
-
             const u = document.getElementById('login-username').value.trim().toUpperCase();
             const p = document.getElementById('login-pin').value.trim();
             
+            // Hardcoded master access
             if (u === 'ADMIN' && p === 'ADMIN123') {
                 loggedInSysUser = { username: 'ADMIN', name: 'System Admin', role: 'ADMIN', status: 'ACTIVE' };
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', name: 'System Admin', role: 'ADMIN', date: getTodayStr() }));
                 document.getElementById('login-error').classList.add('hidden');
                 proceedToMenu();
-                btn.innerHTML = originalText;
-                btn.disabled = false;
                 return;
             }
 
-            let user = SYSTEM_USERS[u];
-            
-            // DIRECT DB FETCH FALLBACK: Fixes the bug where cache is empty after sleep/disconnect causing false "Invalid credentials"
-            if (!user) {
-                try {
-                    const docSnap = await getDoc(doc(db, 'artifacts', targetDbAppId, 'public', 'data', 'system_users', u));
-                    if (docSnap.exists()) {
-                        user = docSnap.data();
-                        SYSTEM_USERS[u] = user; // add to memory
-                    }
-                } catch(err) { console.error("Fallback fetch error:", err); }
-            }
-
+            // Reliable Memory Verification (Data is guaranteed loaded at this point)
+            const user = SYSTEM_USERS[u];
             if (user && user.pin === p && user.status === 'ACTIVE') {
                 loggedInSysUser = user;
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
@@ -370,47 +388,21 @@
             } else {
                 document.getElementById('login-error').classList.remove('hidden');
             }
-            
-            btn.innerHTML = originalText;
-            btn.disabled = false;
         };
 
         window.appLogout = () => {
             localStorage.removeItem(SYS_SESSION_KEY);
             loggedInSysUser = null;
-            showView('login');
-            navBar.classList.add('hidden');
+            checkAuthRouting();
         };
 
-        function proceedToMenu() {
-            showView('menu');
-            navBar.classList.remove('hidden');
-            if (roleDisplay) roleDisplay.textContent = `${loggedInSysUser.name} | ${loggedInSysUser.role}`;
-            
-            const role = loggedInSysUser.role;
-            
-            document.getElementById('tile-attendance').classList.toggle('hidden', role !== 'ADMIN' && role !== 'SECURITY');
-            document.getElementById('tile-canteen').classList.toggle('hidden', role !== 'ADMIN' && role !== 'CANTEEN');
-            document.getElementById('tile-analytics').classList.toggle('hidden', role !== 'ADMIN' && role !== 'REPORT_VIEWER');
-            
-            document.getElementById('tile-planner').classList.toggle('hidden', role !== 'ADMIN');
-            document.getElementById('tile-roster').classList.toggle('hidden', role !== 'ADMIN');
-            document.getElementById('tile-access').classList.toggle('hidden', role !== 'ADMIN');
-            
-            if (role === 'ADMIN') {
-                adminControls.classList.remove('hidden');
-                adminControls.classList.add('flex');
-            } else {
-                adminControls.classList.add('hidden');
-                adminControls.classList.remove('flex');
-            }
-        }
-
+        window.openModule = (path) => {
+            window.location.href = path;
+        };
+        
         // --- Data Backup & Restore Functions ---
         window.backupData = async () => {
-            if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') {
-                showToast('Unauthorized Action', 'error'); return;
-            }
+            if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') return showToast('Unauthorized', 'error');
 
             const btn = document.getElementById('btn-backup');
             const originalContent = btn.innerHTML;
@@ -422,7 +414,7 @@
 
             try {
                 for (const colName of collectionsToBackup) {
-                    const colRef = collection(db, 'artifacts', targetDbAppId, 'public', 'data', colName);
+                    const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
                     const snapshot = await getDocs(colRef);
                     backupObj[colName] = {};
                     snapshot.forEach(doc => { backupObj[colName][doc.id] = doc.data(); });
@@ -439,11 +431,9 @@
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
-                
                 showToast('System data backed up successfully!', 'success');
-
             } catch (err) {
-                showToast("Backup failed: " + err.message, 'error');
+                showToast("Backup failed.", 'error');
             } finally {
                 btn.innerHTML = originalContent;
                 btn.disabled = false;
@@ -465,18 +455,17 @@
                 try {
                     const data = JSON.parse(e.target.result);
                     let importedCount = 0;
-
                     for (const [colName, docs] of Object.entries(data)) {
                         if(typeof docs === 'object' && docs !== null) {
                             for (const [docId, docData] of Object.entries(docs)) {
-                                await setDoc(doc(db, 'artifacts', targetDbAppId, 'public', 'data', colName, docId), docData);
+                                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', colName, docId), docData);
                                 importedCount++;
                             }
                         }
                     }
                     showToast(`Restore complete! ${importedCount} records imported.`, 'success');
                 } catch (err) {
-                    showToast("Restore failed: invalid file format.", 'error');
+                    showToast("Restore failed: invalid file.", 'error');
                 } finally {
                     btn.innerHTML = originalContent;
                     btn.disabled = false;
@@ -485,18 +474,6 @@
             };
             reader.readAsText(file);
         };
-
-        window.openModule = (path) => {
-            window.location.href = path;
-        };
-
-        function showView(viewName) {
-            Object.values(views).forEach(el => el && el.classList.add('hidden'));
-            if(views[viewName]) {
-                views[viewName].classList.remove('hidden');
-                if (viewName === 'login') views[viewName].classList.add('flex'); // Add flex for centering if it's the login view
-            }
-        }
     </script>
 </head>
 <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500 overflow-x-hidden selection:bg-blue-500/30 selection:text-blue-200">
@@ -505,15 +482,11 @@
     <div id="toast-container" class="fixed top-20 right-4 z-[100] flex flex-col gap-2 pointer-events-none"></div>
 
     <!-- FLOATING WHATSAPP BUTTON -->
-    <a href="https://wa.me/94765766230" target="_blank" class="wa-btn fixed bottom-6 left-6 z-50 flex items-center group cursor-pointer drop-shadow-2xl hover:drop-shadow-[0_0_15px_rgba(34,197,94,0.6)] transition-all duration-300 transform hover:scale-105">
+    <a href="https://wa.me/94765766230" target="_blank" class="fixed bottom-6 left-6 z-50 flex items-center group cursor-pointer drop-shadow-2xl hover:drop-shadow-[0_0_15px_rgba(34,197,94,0.6)] transition-all duration-300 transform hover:scale-105">
         <div class="bg-green-500 text-white w-14 h-14 rounded-full flex items-center justify-center text-3xl relative">
             <i class="fab fa-whatsapp"></i>
             <span class="absolute -top-1 -right-1 bg-red-500 h-3 w-3 rounded-full animate-ping"></span>
             <span class="absolute -top-1 -right-1 bg-red-500 h-3 w-3 rounded-full"></span>
-        </div>
-        <div class="wa-tooltip bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded-lg ml-3 -translate-x-4 border border-slate-700 shadow-xl whitespace-nowrap flex flex-col">
-            <span class="text-green-400">Need Developer Support?</span>
-            <span class="font-mono mt-0.5">+94 76 576 6230</span>
         </div>
     </a>
 
@@ -532,7 +505,6 @@
             </div>
             
             <div class="flex items-center gap-3 sm:gap-5">
-                
                 <!-- Admin Backup & Restore Controls -->
                 <div id="admin-controls" class="hidden items-center space-x-2 border-r border-slate-700 pr-3 sm:pr-5">
                     <button id="btn-backup" onclick="backupData()" class="text-xs sm:text-sm bg-slate-800 hover:bg-blue-600 text-slate-300 hover:text-white px-3 sm:px-4 py-2 rounded-lg font-semibold transition-all shadow-sm flex items-center">
@@ -541,7 +513,6 @@
                     <button id="btn-restore" onclick="document.getElementById('restore-file').click()" class="text-xs sm:text-sm bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white px-3 sm:px-4 py-2 rounded-lg font-semibold transition-all shadow-sm flex items-center">
                         <i class="fas fa-upload"></i> <span class="hidden sm:inline ml-2">Restore</span>
                     </button>
-                    <!-- Hidden File Input -->
                     <input type="file" id="restore-file" class="hidden" accept=".json" onchange="restoreData(event)">
                 </div>
 
@@ -559,8 +530,8 @@
 
     <main class="flex-grow flex flex-col relative">
         
-        <!-- LOADING VIEW (Hidden by default to allow instant boot) -->
-        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 hidden flex-col items-center justify-center transition-opacity duration-500">
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 flex flex-col items-center justify-center transition-opacity duration-500">
             <div class="relative flex items-center justify-center mb-6">
                 <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
                 <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
@@ -574,72 +545,59 @@
         </div>
 
         <!-- LOGIN UI -->
-        <div id="view-login" class="absolute inset-0 z-50 bg-slate-950 hidden flex-col items-center justify-center" style="background-image: linear-gradient(rgba(2, 6, 23, 0.75), rgba(2, 6, 23, 0.95)), url('https://i.ibb.co/xKvVg48C/Picsart-26-04-23-12-45-40-850.jpg'); background-size: cover; background-position: center; background-attachment: fixed;">
-            
-            <div class="w-full max-w-[1200px] grid grid-cols-1 lg:grid-cols-5 gap-12 p-6 md:p-12 items-center flex-grow relative z-10">
-                
+        <div id="view-login" class="fixed inset-0 z-50 bg-[#0B1120] hidden flex flex-col items-center justify-center animate-fade-in" style="background-image: linear-gradient(rgba(11, 17, 32, 0.85), rgba(11, 17, 32, 0.95)), url('https://i.ibb.co/xKvVg48C/Picsart-26-04-23-12-45-40-850.jpg'); background-size: cover; background-position: center;">
+            <div class="w-full max-w-[1000px] grid grid-cols-1 md:grid-cols-2 gap-12 p-8 items-center flex-grow relative z-10">
                 <!-- Left Content: Branding -->
-                <div class="lg:col-span-3 flex flex-col items-start hidden md:flex animate-fade-in-up delay-100">
-                    <div class="inline-flex items-center space-x-3 bg-white/5 border border-white/10 px-4 py-2 rounded-full backdrop-blur-md mb-8">
-                        <span class="relative flex h-3 w-3">
-                          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                          <span class="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-                        </span>
-                        <span class="text-xs font-bold text-blue-200 tracking-widest uppercase">Secured Intranet Gateway</span>
+                <div class="flex flex-col items-start hidden md:flex animate-fade-in-up delay-100">
+                    <div class="bg-[#2563EB] w-16 h-16 rounded-2xl flex items-center justify-center shadow-[0_0_30px_rgba(37,99,235,0.4)] mb-6">
+                        <i class="fas fa-utensils text-white text-3xl"></i>
                     </div>
-
-                    <h1 class="text-5xl lg:text-7xl font-black text-white mb-2 tracking-tight drop-shadow-2xl">CanteenOS <br><span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400">Professional</span></h1>
-                    
-                    <div class="h-1 w-20 bg-blue-500 rounded-full my-6"></div>
-                    
-                    <p class="text-slate-300 text-base leading-relaxed max-w-lg drop-shadow-md font-medium">
+                    <h1 class="text-[2.75rem] font-extrabold text-white mb-0 tracking-tight leading-tight drop-shadow-lg">CanteenOS</h1>
+                    <h2 class="text-[2.75rem] font-extrabold text-[#3B82F6] mb-6 tracking-tight leading-tight drop-shadow-lg">Professional</h2>
+                    <p class="text-slate-300 text-sm leading-relaxed max-w-sm drop-shadow-md font-medium">
                         Secure enterprise terminal access featuring real-time analytics and biometric photo verification, exclusively engineered for KDC & ALC facilities.
                     </p>
                 </div>
 
                 <!-- Right Content: Login Form -->
-                <div class="lg:col-span-2 w-full max-w-md mx-auto relative animate-fade-in-up delay-200">
-                    <div class="glass-panel rounded-3xl p-8 sm:p-10 relative z-10 overflow-hidden" style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255,255,255,0.05);">
+                <div class="w-full max-w-md mx-auto relative animate-fade-in-up delay-200">
+                    <div class="bg-[#131B2B]/90 backdrop-blur-xl border border-[#1F2937] rounded-[2rem] p-10 shadow-2xl relative z-10 overflow-hidden">
+                        <div class="absolute -top-24 -right-24 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
                         
-                        <div class="text-center mb-8 relative z-20">
-                            <h2 class="text-2xl font-extrabold text-white mb-1 tracking-tight">Terminal Access</h2>
-                            <p class="text-[9px] text-slate-400 uppercase tracking-widest font-bold">SECURE TERMINAL ID REQUIRED</p>
+                        <div class="text-center mb-10 relative z-20">
+                            <h2 class="text-2xl font-extrabold text-white mb-2">Terminal Access</h2>
+                            <p class="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Secure Terminal ID Required</p>
                         </div>
                         
                         <form onsubmit="appLogin(event)" class="space-y-6 relative z-20">
                             <div>
-                                <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">TERMINAL ID</label>
-                                <input type="text" id="login-username" class="w-full px-4 py-3.5 rounded-xl bg-white text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold" required autocomplete="off">
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">TERMINAL ID</label>
+                                <input type="text" id="login-username" class="w-full px-4 py-3.5 border border-[#1F2937] rounded-xl bg-[#0B1120]/80 text-sm text-slate-200 focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] outline-none transition-all font-bold uppercase" required autocomplete="off">
                             </div>
 
                             <div>
-                                <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">SECRET KEY (ACCESS AUTH)</label>
-                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-blue-500/50 rounded-xl bg-slate-900/80 text-sm text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all tracking-widest shadow-inner" required autocomplete="off">
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">SECRET KEY (ACCESS AUTH)</label>
+                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-[#1F2937] rounded-xl bg-[#0B1120]/80 text-sm text-slate-200 focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] outline-none transition-all tracking-widest shadow-inner" required autocomplete="off">
                             </div>
                             
-                            <div id="login-error" class="hidden text-red-400 text-xs text-center font-semibold bg-red-500/10 py-3 rounded-lg border border-red-500/20 animate-fade-in-up flex items-center justify-center">
+                            <div id="login-error" class="hidden text-red-400 text-xs text-center font-semibold bg-red-500/10 py-3 rounded-lg border border-red-500/20 flex items-center justify-center">
                                 <i class="fas fa-exclamation-circle mr-2"></i> Invalid credentials.
                             </div>
                             
-                            <div class="pt-2">
-                                <button type="submit" id="login-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl shadow-[0_0_15px_rgba(37,99,235,0.4)] transition-all transform active:scale-[0.98] text-sm tracking-wide flex items-center justify-center">
+                            <div class="pt-4">
+                                <button type="submit" id="login-btn" class="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3.5 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)] transition-all transform active:scale-[0.98] text-sm tracking-wide">
                                     Verify & Connect
                                 </button>
                             </div>
                         </form>
-
                     </div>
                 </div>
             </div>
             
-            <!-- Global Footer text specifically for Login view -->
             <div class="absolute bottom-6 w-full text-center z-20 pointer-events-none px-4">
                 <p class="text-[12px] text-slate-300 font-semibold mb-1 drop-shadow-md">Application developed by Growth Gen</p>
                 <p class="text-[11px] text-slate-500 font-medium drop-shadow-md">© 2026 360° Management (Pvt) Ltd. All rights reserved.</p>
             </div>
-            
-            <!-- Bottom Fade -->
-            <div class="absolute bottom-0 w-full bg-gradient-to-t from-slate-950 to-transparent h-48 pointer-events-none z-10"></div>
         </div>
 
         <!-- DASHBOARD MENU & STATS -->
@@ -756,13 +714,6 @@
                     <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Extract detailed consumption data, LKR expenditure, and export audits.</p>
                     <div class="mt-4 text-purple-600 dark:text-purple-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
                 </div>
-            </div>
-            
-            <!-- Global Footer for Dashboard Menu -->
-            <div class="mt-12 text-center pb-8 animate-fade-in-up delay-400 px-4">
-                <p class="text-[13px] text-slate-400 font-semibold mb-2">CanteenOS <span class="text-slate-500 mx-1">|</span> Professional Enterprise System</p>
-                <p class="text-[11px] text-slate-500 mt-3">Application developed by Growth Gen</p>
-                <p class="text-[11px] text-slate-500 mt-1">© 2026 360° Management (Pvt) Ltd. All rights reserved.</p>
             </div>
             
         </div>
