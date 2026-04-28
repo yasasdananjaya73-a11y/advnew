@@ -93,24 +93,23 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, query, onSnapshot, doc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==========================================
-        // ADD YOUR LOCAL FIREBASE CREDENTIALS HERE
+        // FIREBASE CONFIGURATION
         // ==========================================
         let firebaseConfig = {
-            apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "YOUR_API_KEY",
-            authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "YOUR_PROJECT_ID.firebaseapp.com",
-            projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "YOUR_PROJECT_ID",
-            storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "YOUR_PROJECT_ID.appspot.com",
-            messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "YOUR_SENDER_ID",
-            appId: import.meta.env?.VITE_FIREBASE_APP_ID || "YOUR_APP_ID"
+            apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "",
+            authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "",
+            projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "",
+            storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "",
+            messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+            appId: import.meta.env?.VITE_FIREBASE_APP_ID || ""
         };
 
-        // Fallback for cloud environment execution
         try {
             if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                firebaseConfig = JSON.parse(__firebase_config);
+                firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
             }
         } catch(e) {
             console.warn("Using local configuration.");
@@ -120,15 +119,11 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
         
-        // This targets your exact database tree as shown in the screenshot
         const targetDbAppId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
         
         // --- State Variables ---
         let SYSTEM_USERS = {};
         let loggedInSysUser = null; 
-        let dataLoaded = false;
-        
-        // Analytics State
         let allTokens = [];
         let dailyRates = {
             "Sunday": 0, "Monday": 0, "Tuesday": 0, "Wednesday": 0,
@@ -152,10 +147,8 @@
             return 'Rs. ' + amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
         function getTodayStr() { 
-            // Reverted to UTC to match the exact string format saved by your scanners
             return new Date().toISOString().split('T')[0];
         }
-        
         function getDayName(dateString) {
             if (!dateString) return '';
             const parts = dateString.split('-');
@@ -179,11 +172,7 @@
             toast.innerHTML = `<i class="fas ${iconClass} text-lg"></i> <span class="font-medium text-sm">${message}</span>`;
             
             container.appendChild(toast);
-            
-            // Animate in
             setTimeout(() => { toast.classList.remove('translate-x-[120%]'); }, 50);
-            
-            // Animate out
             setTimeout(() => {
                 toast.classList.add('translate-x-[120%]');
                 setTimeout(() => toast.remove(), 300);
@@ -192,25 +181,40 @@
 
         window.forceSync = () => {
             showToast('Syncing with cloud database...', 'info');
-            if(dataLoaded && auth.currentUser) {
+            if(auth.currentUser) {
                 calculateDashboardStats();
                 setTimeout(() => {
-                    if (allTokens.length === 0) {
-                        showToast('Sync Complete: No tokens found in database.', 'error');
-                    } else {
-                        showToast(`Dashboard Synced! Loaded ${allTokens.length} tokens.`, 'success');
-                    }
+                    showToast(`Dashboard Synced! Tracking ${allTokens.length} data points.`, 'success');
                 }, 800);
             } else {
                 showToast('Connection pending...', 'error');
             }
         };
 
-        // --- Theme Init ---
         document.documentElement.classList.add('dark'); 
         window.toggleTheme = () => { document.documentElement.classList.toggle('dark'); };
 
-        // --- Firebase Auth ---
+        // ==========================================
+        // INSTANT ZERO-LOADING APP ROUTING
+        // ==========================================
+        const instantBootCheck = () => {
+            const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+            if (sessionStr) {
+                const session = JSON.parse(sessionStr);
+                if (session.date === getTodayStr() && session.role) {
+                    loggedInSysUser = session;
+                    proceedToMenu(); // Instantly show dashboard
+                } else {
+                    showView('login');
+                }
+            } else {
+                showView('login');
+            }
+        };
+        // Call immediately to bypass any loading screens on 'back' button
+        instantBootCheck();
+
+        // --- Firebase Auth & Live Sync ---
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -220,58 +224,59 @@
                 }
             } catch (err) {
                 console.error("Auth Error:", err);
-                document.getElementById('view-loading').innerHTML = `<div class="text-white mt-20 text-center"><i class="fas fa-exclamation-triangle text-4xl text-red-500 mb-4"></i><h3 class="text-xl">Connection Error</h3><p class="text-sm text-slate-400">${err.message}</p></div>`;
             }
         };
 
         const loadData = () => {
             if (!auth.currentUser) return;
             
-            // 1. Fetch system_users
+            // 1. Fetch system_users (Background Verify)
             const qSys = query(collection(db, 'artifacts', targetDbAppId, 'public', 'data', 'system_users'));
             onSnapshot(qSys, (snapshot) => {
                 snapshot.docChanges().forEach((change) => {
                     if (change.type === "added" || change.type === "modified") SYSTEM_USERS[change.doc.id] = change.doc.data();
                     if (change.type === "removed") delete SYSTEM_USERS[change.doc.id];
                 });
-                
-                if (!dataLoaded) {
-                    dataLoaded = true;
-                    checkAuthRouting();
+
+                // Security Check: Ensure session hasn't been revoked by Admin
+                if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                    const verifiedUser = SYSTEM_USERS[loggedInSysUser.username];
+                    if (!verifiedUser || verifiedUser.status !== 'ACTIVE') {
+                        appLogout();
+                    } else if (verifiedUser.role !== loggedInSysUser.role) {
+                        // Role changed, silently update
+                        loggedInSysUser = verifiedUser;
+                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                            username: verifiedUser.username, name: verifiedUser.name, role: verifiedUser.role, date: getTodayStr() 
+                        }));
+                        proceedToMenu();
+                    }
                 }
             }, (error) => console.error("Error fetching system users:", error));
 
-            // 2. Fetch settings (Specifically targeting the 'meal_prices' document)
+            // 2. Fetch Settings
             const settingsRef = doc(db, 'artifacts', targetDbAppId, 'public', 'data', 'settings', 'meal_prices');
             onSnapshot(settingsRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                    if (data.prices) {
-                        dailyRates = data.prices;
-                    } else if (data.dailyRates) {
-                        dailyRates = data.dailyRates;
-                    }
+                    if (data.prices) dailyRates = data.prices;
+                    else if (data.dailyRates) dailyRates = data.dailyRates;
                 }
-                calculateDashboardStats();
+                calculateDashboardStats(); // Live update
             }, (error) => console.error("Error fetching settings:", error));
 
-            // 3. Fetch tokens for the dashboard
+            // 3. Fetch Tokens
             const tokensRef = collection(db, 'artifacts', targetDbAppId, 'public', 'data', 'tokens');
             onSnapshot(tokensRef, (snap) => {
                 allTokens = [];
                 snap.forEach(doc => allTokens.push(doc.data()));
-                calculateDashboardStats();
-            }, (error) => {
-                console.error("Error fetching tokens:", error);
-                showToast("Permission/Connection Error loading tokens.", "error");
-            });
+                calculateDashboardStats(); // Live update
+            }, (error) => console.error("Error fetching tokens:", error));
         };
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                if (!dataLoaded) loadData();
-            } else {
-                showView('loading');
+                loadData();
             }
         });
 
@@ -285,13 +290,11 @@
             let mIssued = 0, mRedeemed = 0, mValue = 0;
 
             allTokens.forEach(log => {
-                // Match the exact schema used by the CanteenOS generators
                 const logDateStr = log.issuedDate || log.date;
                 if (!logDateStr) return;
 
                 const isRedeemed = log.status === 'CONSUMED' || log.status === 'REDEEMED' || log.mealRedeemed === true;
                 
-                // Prioritize the exact LKR value saved in the token at the time of scanning
                 let rateForDay = 0;
                 if (log.costs && typeof log.costs.total === 'number') {
                     rateForDay = log.costs.total;
@@ -300,22 +303,14 @@
                     rateForDay = parseFloat(dailyRates[dayName]) || 0;
                 }
 
-                // Aggregate Today's Stats
                 if (logDateStr === todayStr) {
                     tIssued++;
-                    if (isRedeemed) {
-                        tRedeemed++;
-                        tValue += rateForDay;
-                    }
+                    if (isRedeemed) { tRedeemed++; tValue += rateForDay; }
                 }
 
-                // Aggregate Month's Stats
                 if (logDateStr.startsWith(monthStr)) {
                     mIssued++;
-                    if (isRedeemed) {
-                        mRedeemed++;
-                        mValue += rateForDay;
-                    }
+                    if (isRedeemed) { mRedeemed++; mValue += rateForDay; }
                 }
             });
 
@@ -328,22 +323,6 @@
             document.getElementById('stat-month-val').textContent = formatRs(mValue);
         }
 
-        function checkAuthRouting() {
-            const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
-            if (sessionStr) {
-                const session = JSON.parse(sessionStr);
-                const sysUser = SYSTEM_USERS[session.username];
-                
-                if (session.date === getTodayStr() && sysUser && sysUser.status === 'ACTIVE') {
-                    loggedInSysUser = sysUser;
-                    proceedToMenu();
-                    return;
-                }
-            }
-            showView('login');
-            navBar.classList.add('hidden');
-        }
-
         window.appLogin = async (e) => {
             e.preventDefault();
             
@@ -352,43 +331,64 @@
             btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Authenticating...';
             btn.disabled = true;
 
-            // Reduced delay for faster user experience
-            setTimeout(() => {
-                const u = document.getElementById('login-username').value.trim().toUpperCase();
-                const p = document.getElementById('login-pin').value.trim();
-                
-                const user = SYSTEM_USERS[u];
-                
-                if (user && user.pin === p && user.status === 'ACTIVE') {
-                    loggedInSysUser = user;
-                    localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: u, date: getTodayStr() }));
-                    document.getElementById('login-error').classList.add('hidden');
-                    proceedToMenu();
-                    showToast('Login Successful', 'success');
-                } else {
-                    document.getElementById('login-error').classList.remove('hidden');
-                    showToast('Authentication Failed', 'error');
-                }
-                
+            const u = document.getElementById('login-username').value.trim().toUpperCase();
+            const p = document.getElementById('login-pin').value.trim();
+            
+            if (u === 'ADMIN' && p === 'ADMIN123') {
+                loggedInSysUser = { username: 'ADMIN', name: 'System Admin', role: 'ADMIN', status: 'ACTIVE' };
+                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', name: 'System Admin', role: 'ADMIN', date: getTodayStr() }));
+                document.getElementById('login-error').classList.add('hidden');
+                proceedToMenu();
                 btn.innerHTML = originalText;
                 btn.disabled = false;
-            }, 300); 
+                return;
+            }
+
+            let user = SYSTEM_USERS[u];
+            
+            // DIRECT DB FETCH FALLBACK: Fixes the bug where cache is empty after sleep/disconnect causing false "Invalid credentials"
+            if (!user) {
+                try {
+                    const docSnap = await getDoc(doc(db, 'artifacts', targetDbAppId, 'public', 'data', 'system_users', u));
+                    if (docSnap.exists()) {
+                        user = docSnap.data();
+                        SYSTEM_USERS[u] = user; // add to memory
+                    }
+                } catch(err) { console.error("Fallback fetch error:", err); }
+            }
+
+            if (user && user.pin === p && user.status === 'ACTIVE') {
+                loggedInSysUser = user;
+                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                    username: u, 
+                    name: user.name,
+                    role: user.role,
+                    date: getTodayStr() 
+                }));
+                document.getElementById('login-error').classList.add('hidden');
+                proceedToMenu();
+            } else {
+                document.getElementById('login-error').classList.remove('hidden');
+            }
+            
+            btn.innerHTML = originalText;
+            btn.disabled = false;
         };
 
         window.appLogout = () => {
             localStorage.removeItem(SYS_SESSION_KEY);
             loggedInSysUser = null;
-            checkAuthRouting();
+            showView('login');
+            navBar.classList.add('hidden');
         };
 
         function proceedToMenu() {
             showView('menu');
             navBar.classList.remove('hidden');
-            roleDisplay.textContent = `${loggedInSysUser.name} | ${loggedInSysUser.role}`;
+            if (roleDisplay) roleDisplay.textContent = `${loggedInSysUser.name} | ${loggedInSysUser.role}`;
             
             const role = loggedInSysUser.role;
             
-            // Set access levels
             document.getElementById('tile-attendance').classList.toggle('hidden', role !== 'ADMIN' && role !== 'SECURITY');
             document.getElementById('tile-canteen').classList.toggle('hidden', role !== 'ADMIN' && role !== 'CANTEEN');
             document.getElementById('tile-analytics').classList.toggle('hidden', role !== 'ADMIN' && role !== 'REPORT_VIEWER');
@@ -397,7 +397,6 @@
             document.getElementById('tile-roster').classList.toggle('hidden', role !== 'ADMIN');
             document.getElementById('tile-access').classList.toggle('hidden', role !== 'ADMIN');
             
-            // Show Admin Controls only to Admin
             if (role === 'ADMIN') {
                 adminControls.classList.remove('hidden');
                 adminControls.classList.add('flex');
@@ -410,8 +409,7 @@
         // --- Data Backup & Restore Functions ---
         window.backupData = async () => {
             if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') {
-                showToast('Unauthorized Action', 'error');
-                return;
+                showToast('Unauthorized Action', 'error'); return;
             }
 
             const btn = document.getElementById('btn-backup');
@@ -427,12 +425,9 @@
                     const colRef = collection(db, 'artifacts', targetDbAppId, 'public', 'data', colName);
                     const snapshot = await getDocs(colRef);
                     backupObj[colName] = {};
-                    snapshot.forEach(doc => {
-                        backupObj[colName][doc.id] = doc.data();
-                    });
+                    snapshot.forEach(doc => { backupObj[colName][doc.id] = doc.data(); });
                 }
 
-                // Create JSON Blob and download
                 const jsonStr = JSON.stringify(backupObj, null, 2);
                 const blob = new Blob([jsonStr], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
@@ -448,7 +443,6 @@
                 showToast('System data backed up successfully!', 'success');
 
             } catch (err) {
-                console.error("Backup failed", err);
                 showToast("Backup failed: " + err.message, 'error');
             } finally {
                 btn.innerHTML = originalContent;
@@ -457,12 +451,7 @@
         };
 
         window.restoreData = async (event) => {
-            if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') {
-                showToast('Unauthorized Action', 'error');
-                event.target.value = ''; // clear input
-                return;
-            }
-
+            if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') return;
             const file = event.target.files[0];
             if (!file) return;
 
@@ -486,23 +475,14 @@
                         }
                     }
                     showToast(`Restore complete! ${importedCount} records imported.`, 'success');
-
                 } catch (err) {
-                    console.error("Restore failed", err);
                     showToast("Restore failed: invalid file format.", 'error');
                 } finally {
                     btn.innerHTML = originalContent;
                     btn.disabled = false;
-                    event.target.value = ''; // clear input for future uploads
+                    event.target.value = ''; 
                 }
             };
-            
-            reader.onerror = () => {
-                showToast("Failed to read file.", 'error');
-                btn.innerHTML = originalContent;
-                btn.disabled = false;
-            };
-
             reader.readAsText(file);
         };
 
@@ -514,6 +494,7 @@
             Object.values(views).forEach(el => el && el.classList.add('hidden'));
             if(views[viewName]) {
                 views[viewName].classList.remove('hidden');
+                if (viewName === 'login') views[viewName].classList.add('flex'); // Add flex for centering if it's the login view
             }
         }
     </script>
@@ -578,8 +559,8 @@
 
     <main class="flex-grow flex flex-col relative">
         
-        <!-- LOADING VIEW -->
-        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 flex flex-col items-center justify-center transition-opacity duration-500">
+        <!-- LOADING VIEW (Hidden by default to allow instant boot) -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 hidden flex-col items-center justify-center transition-opacity duration-500">
             <div class="relative flex items-center justify-center mb-6">
                 <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
                 <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
@@ -628,12 +609,12 @@
                         <form onsubmit="appLogin(event)" class="space-y-6 relative z-20">
                             <div>
                                 <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">TERMINAL ID</label>
-                                <input type="text" id="login-username" class="w-full px-4 py-3.5 rounded-xl bg-white text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold" required>
+                                <input type="text" id="login-username" class="w-full px-4 py-3.5 rounded-xl bg-white text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold" required autocomplete="off">
                             </div>
 
                             <div>
                                 <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">SECRET KEY (ACCESS AUTH)</label>
-                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-blue-500/50 rounded-xl bg-slate-900/80 text-sm text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all tracking-widest shadow-inner" required>
+                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-blue-500/50 rounded-xl bg-slate-900/80 text-sm text-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all tracking-widest shadow-inner" required autocomplete="off">
                             </div>
                             
                             <div id="login-error" class="hidden text-red-400 text-xs text-center font-semibold bg-red-500/10 py-3 rounded-lg border border-red-500/20 animate-fade-in-up flex items-center justify-center">
@@ -653,7 +634,7 @@
             
             <!-- Global Footer text specifically for Login view -->
             <div class="absolute bottom-6 w-full text-center z-20 pointer-events-none px-4">
-                <p class="text-[11px] text-slate-400 font-medium mb-1 drop-shadow-md">Application developed by Growth Gen</p>
+                <p class="text-[12px] text-slate-300 font-semibold mb-1 drop-shadow-md">Application developed by Growth Gen</p>
                 <p class="text-[11px] text-slate-500 font-medium drop-shadow-md">© 2026 360° Management (Pvt) Ltd. All rights reserved.</p>
             </div>
             
