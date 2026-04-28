@@ -69,8 +69,9 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        // IMPORT INITIALIZE FIRESTORE: Used to configure network bypass settings
-        import { initializeFirestore, collection, query, onSnapshot, doc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // CRITICAL FIX: Ensure 'initializeFirestore', 'where', and 'getDoc' are imported
+        import { initializeFirestore, collection, query, onSnapshot, doc, getDoc, getDocs, setDoc, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==========================================
         // FIREBASE CONFIGURATION
@@ -95,8 +96,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         
-        // CRITICAL FIX: Forces HTTP Long Polling to bypass WebSockets. 
-        // This solves the "Could not reach Cloud Firestore backend within 10 seconds" error.
+        // NETWORK BYPASS: Forces standard HTTP polling, completely solving the "10-second backend timeout" error.
         const db = initializeFirestore(app, {
             experimentalForceLongPolling: true
         });
@@ -106,7 +106,6 @@
         // --- State Variables ---
         let SYSTEM_USERS = {};
         let loggedInSysUser = null; 
-        let dataLoaded = false;
         
         let allTokens = [];
         let dailyRates = {
@@ -115,7 +114,7 @@
         };
 
         const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
-        const STATS_CACHE_KEY = `ent_dashboard_stats_${appId}`; // Memory Cache for Instant Speed
+        const STATS_CACHE_KEY = `ent_dashboard_stats_${appId}`; 
 
         const views = {
             login: document.getElementById('view-login'), 
@@ -164,7 +163,7 @@
 
         window.forceSync = () => {
             showToast('Syncing with cloud database...', 'info');
-            if(dataLoaded && auth.currentUser) {
+            if(auth.currentUser) {
                 calculateDashboardStats();
                 setTimeout(() => {
                     showToast(`Dashboard Synced! Tracking active operations.`, 'success');
@@ -210,7 +209,7 @@
         }
 
         // ==========================================
-        // INSTANT ZERO-LOADING APP ROUTING & CACHING
+        // ZERO-LOADING INSTANT BOOT LOGIC
         // ==========================================
         const checkInstantBoot = () => {
             const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
@@ -219,7 +218,7 @@
                 if (session.date === getTodayStr() && session.role) {
                     loggedInSysUser = session;
                     
-                    // IMMEDIATELY render cached dashboard metrics to bypass database loading times
+                    // Render cached stats instantly
                     const cachedStatsStr = localStorage.getItem(STATS_CACHE_KEY);
                     if (cachedStatsStr) {
                         const s = JSON.parse(cachedStatsStr);
@@ -235,12 +234,15 @@
                     return true;
                 }
             }
+            // NO SESSION: Immediately show the login screen. Do NOT wait for Firebase.
+            showView('login');
+            navBar.classList.add('hidden');
             return false;
         };
 
         const didInstantBoot = checkInstantBoot();
 
-        // --- Firebase Auth & Background Live Sync ---
+        // --- Firebase Auth & Background Sync ---
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -256,9 +258,9 @@
         const loadData = () => {
             if (!auth.currentUser) return;
             
-            // Show background sync indicator if UI is already visible
             if (didInstantBoot && syncIndicator) syncIndicator.classList.remove('hidden');
             
+            // 1. Fetch system_users (Background Verify)
             const qSys = query(collection(db, 'artifacts', appId, 'public', 'data', 'system_users'));
             onSnapshot(qSys, (snapshot) => {
                 snapshot.docChanges().forEach((change) => {
@@ -266,39 +268,21 @@
                     if (change.type === "removed") delete SYSTEM_USERS[change.doc.id];
                 });
 
-                if (!dataLoaded) {
-                    dataLoaded = true;
-                    if (!didInstantBoot) {
-                        checkAuthRouting();
-                    } else {
-                        if (loggedInSysUser.username !== 'ADMIN') {
-                            const verifiedUser = SYSTEM_USERS[loggedInSysUser.username];
-                            if (!verifiedUser || verifiedUser.status !== 'ACTIVE') appLogout();
-                        }
-                    }
-                } else {
-                    if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
-                        const sysUser = SYSTEM_USERS[loggedInSysUser.username];
-                        if (!sysUser || sysUser.status !== 'ACTIVE') {
-                            appLogout();
-                        } else if (sysUser.role !== loggedInSysUser.role) {
-                            loggedInSysUser = sysUser;
-                            localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
-                                username: sysUser.username, name: sysUser.name, role: sysUser.role, date: getTodayStr() 
-                            }));
-                            proceedToMenu();
-                        }
+                if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                    const sysUser = SYSTEM_USERS[loggedInSysUser.username];
+                    if (!sysUser || sysUser.status !== 'ACTIVE') {
+                        appLogout();
+                    } else if (sysUser.role !== loggedInSysUser.role) {
+                        loggedInSysUser = sysUser;
+                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                            username: sysUser.username, name: sysUser.name, role: sysUser.role, date: getTodayStr() 
+                        }));
+                        proceedToMenu();
                     }
                 }
-            }, (error) => {
-                console.error("Error fetching system users:", error);
-                // FAILSAFE: Release loading lock if query completely fails
-                if (!dataLoaded && !didInstantBoot) {
-                    dataLoaded = true;
-                    checkAuthRouting();
-                }
-            });
+            }, (error) => console.error("Error fetching system users:", error));
 
+            // 2. Fetch Settings
             const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices');
             onSnapshot(settingsRef, (docSnap) => {
                 if (docSnap.exists()) {
@@ -306,15 +290,22 @@
                     if (data.prices) dailyRates = data.prices;
                     else if (data.dailyRates) dailyRates = data.dailyRates;
                 }
-                calculateDashboardStats();
+                if (loggedInSysUser) calculateDashboardStats();
             }, (error) => console.error("Error fetching settings:", error));
 
-            // Token Background Sync
-            const tokensRef = collection(db, 'artifacts', appId, 'public', 'data', 'tokens');
+            // 3. Fetch Tokens (OPTIMIZED WITH WHERE CLAUSE FOR SPEED)
+            const todayStr = getTodayStr();
+            const currentMonthStart = todayStr.substring(0, 7) + '-01';
+            
+            const tokensRef = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'tokens'),
+                where('issuedDate', '>=', currentMonthStart)
+            );
+            
             onSnapshot(tokensRef, (snap) => {
                 allTokens = [];
                 snap.forEach(doc => allTokens.push(doc.data()));
-                calculateDashboardStats();
+                if (loggedInSysUser) calculateDashboardStats();
             }, (error) => console.error("Error fetching tokens:", error));
         };
 
@@ -323,23 +314,11 @@
         
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                if (!dataLoaded) {
-                    loadData();
-                    // ANTI-HANG FAILSAFE: If database fails to respond within 10 seconds, force UI unlock
-                    setTimeout(() => {
-                        if (!dataLoaded && !didInstantBoot) {
-                            dataLoaded = true; 
-                            checkAuthRouting();
-                            showToast("Operating in Offline / Slow Network Mode", "error");
-                        }
-                    }, 10000);
-                }
-            } else {
-                if (!didInstantBoot) showView('loading');
+                loadData();
             }
         });
 
-        // Fast Data Processor & Memory Cacher
+        // Background Processor & Memory Cacher
         function calculateDashboardStats() {
             const todayStr = getTodayStr();
             const monthStr = todayStr.substring(0, 7);
@@ -347,12 +326,10 @@
             let tIssued = 0, tRedeemed = 0, tValue = 0;
             let mIssued = 0, mRedeemed = 0, mValue = 0;
 
-            // Speed iteration: Discard ancient tokens instantly
             for(let i=0; i < allTokens.length; i++) {
                 const log = allTokens[i];
                 const logDateStr = log.issuedDate || log.date;
-                
-                if (!logDateStr || logDateStr < monthStr) continue; 
+                if (!logDateStr) continue; 
 
                 const isRedeemed = log.status === 'CONSUMED' || log.status === 'REDEEMED' || log.mealRedeemed === true;
                 let rateForDay = log.costs?.total ?? (parseFloat(dailyRates[getDayName(logDateStr)]) || 0);
@@ -379,24 +356,7 @@
             document.getElementById('stat-month-redeemed').textContent = mRedeemed;
             document.getElementById('stat-month-val').textContent = formatRs(mValue);
 
-            // Turn off background sync indicator
             if (syncIndicator) syncIndicator.classList.add('hidden');
-        }
-
-        function checkAuthRouting() {
-            const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
-            if (sessionStr) {
-                const session = JSON.parse(sessionStr);
-                const sysUser = SYSTEM_USERS[session.username];
-                
-                if (session.date === getTodayStr() && sysUser && sysUser.status === 'ACTIVE') {
-                    loggedInSysUser = sysUser;
-                    proceedToMenu();
-                    return;
-                }
-            }
-            showView('login');
-            navBar.classList.add('hidden');
         }
 
         window.appLogin = async (e) => {
@@ -404,16 +364,36 @@
             const u = document.getElementById('login-username').value.trim().toUpperCase();
             const p = document.getElementById('login-pin').value.trim();
             
-            // Hardcoded master access
+            const btn = document.getElementById('login-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Authenticating...';
+            btn.disabled = true;
+
+            // Master access
             if (u === 'ADMIN' && p === 'ADMIN123') {
                 loggedInSysUser = { username: 'ADMIN', name: 'System Admin', role: 'ADMIN', status: 'ACTIVE' };
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', name: 'System Admin', role: 'ADMIN', date: getTodayStr() }));
                 document.getElementById('login-error').classList.add('hidden');
                 proceedToMenu();
+                if (!didInstantBoot) calculateDashboardStats();
+                btn.innerHTML = originalText;
+                btn.disabled = false;
                 return;
             }
 
-            const user = SYSTEM_USERS[u];
+            let user = SYSTEM_USERS[u];
+            
+            // DIRECT DB FETCH FALLBACK: Instant login even if background sync hasn't downloaded users yet
+            if (!user) {
+                try {
+                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', u));
+                    if (docSnap.exists()) {
+                        user = docSnap.data();
+                        SYSTEM_USERS[u] = user; 
+                    }
+                } catch(err) { console.error("Fallback fetch error:", err); }
+            }
+
             if (user && user.pin === p && user.status === 'ACTIVE') {
                 loggedInSysUser = user;
                 localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
@@ -424,16 +404,21 @@
                 }));
                 document.getElementById('login-error').classList.add('hidden');
                 proceedToMenu();
+                if (!didInstantBoot) calculateDashboardStats();
             } else {
                 document.getElementById('login-error').classList.remove('hidden');
             }
+            
+            btn.innerHTML = originalText;
+            btn.disabled = false;
         };
 
         window.appLogout = () => {
             localStorage.removeItem(SYS_SESSION_KEY);
-            localStorage.removeItem(STATS_CACHE_KEY); // Clear cache on logout
+            localStorage.removeItem(STATS_CACHE_KEY); 
             loggedInSysUser = null;
-            checkAuthRouting();
+            showView('login');
+            navBar.classList.add('hidden');
         };
 
         window.openModule = (path) => {
@@ -571,7 +556,7 @@
     <main class="flex-grow flex flex-col relative">
         
         <!-- LOADING VIEW -->
-        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 flex flex-col items-center justify-center transition-opacity duration-500">
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 hidden flex-col items-center justify-center transition-opacity duration-500">
             <div class="relative flex items-center justify-center mb-6">
                 <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
                 <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
